@@ -4,14 +4,18 @@ from enum import Enum
 import os
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
+from tempfile import TemporaryDirectory
 
+from cloudpathlib import CloudPath
 from flax import nnx
 import jax.numpy as jnp
 import optax
 import safetensors.numpy
 from transformers import PretrainedConfig
+from peft import LoraConfig as PEFTLoraConfig
 
 from tx import models
+from tx.tinker.types import LoraConfig
 
 if TYPE_CHECKING:
     import torch
@@ -80,7 +84,7 @@ def load_checkpoint(checkpoint_dir: str | os.PathLike, config: PretrainedConfig,
     nnx.update(model, nnx.from_flat_state(updates))
 
 
-def save_checkpoint(config: PretrainedConfig, model: nnx.Module, filename: str | os.PathLike) -> None:
+def save_checkpoint(config: PretrainedConfig, model: nnx.Module, file_path: Path) -> None:
     model_params = nnx.to_flat_state(nnx.state(model))
     tensors = {}
     for path, param in model_params:
@@ -96,7 +100,24 @@ def save_checkpoint(config: PretrainedConfig, model: nnx.Module, filename: str |
         elif "o_proj" in path:
             param = param.reshape(-1, param.shape[-1])
         tensors[key] = param if "embed_tokens" in path else param.T
-    safetensors.numpy.save_file(tensors, filename)
+
+    if isinstance(file_path, CloudPath):
+        with TemporaryDirectory() as temp_dir:
+            tmp_file = Path(temp_dir) / "model.safetensors"
+            safetensors.numpy.save_file(tensors, tmp_file)
+            file_path.upload_from(tmp_file)
+    else:
+        safetensors.numpy.save_file(tensors, file_path)
+
+
+def save_adapter_config(adapter_config: LoraConfig, output_dir: Path) -> None:
+    peft_config = PEFTLoraConfig(r=adapter_config.rank, lora_alpha=adapter_config.alpha)
+    if isinstance(output_dir, CloudPath):
+        with TemporaryDirectory() as temp_dir:
+            peft_config.save_pretrained(temp_dir)
+            output_dir.upload_from(temp_dir)
+    else:
+        peft_config.save_pretrained(output_dir)
 
 
 class OptimizerName(str, Enum):

@@ -17,9 +17,8 @@ from huggingface_hub import snapshot_download
 from tx.tinker.db_models import FutureDB, DB_PATH, RequestStatus
 from tx.tinker import types
 from tx.tinker.config import EngineConfig, add_model
-from tx.utils.models import get_dtype, get_model_class, save_checkpoint, load_checkpoint
+from tx.utils.models import get_dtype, get_model_class, save_checkpoint, load_checkpoint, save_adapter_config
 from tx.layers.lora import update_adapter_config
-from peft import LoraConfig
 
 logger = logging.getLogger(__name__)
 
@@ -348,10 +347,7 @@ class TinkerEngine:
         save_checkpoint(self.model_config, adapter_lora_params, output_dir / "adapter_model.safetensors")
 
         # Save LoRA config
-        lora_config = LoraConfig(
-            r=self.models[model_id].lora_config.rank, lora_alpha=self.models[model_id].lora_config.alpha
-        )
-        lora_config.save_pretrained(output_dir)
+        save_adapter_config(self.models[model_id].lora_config, output_dir)
 
         logger.info(f"Saved LoRA adapter weights for model {model_id} (adapter {adapter_index}) to {output_dir}")
 

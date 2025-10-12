@@ -9,8 +9,8 @@ from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine
 import asyncio
-import subprocess
 import logging
+import subprocess
 import tarfile
 import io
 from pathlib import Path
@@ -342,7 +342,12 @@ def create_tar_archive(checkpoint_dir: Path) -> tuple[io.BytesIO, int]:
     with tarfile.open(fileobj=tar_buffer, mode="w:gz") as tar:
         for p in checkpoint_dir.iterdir():
             if p.is_file():
-                tar.add(p, arcname=p.name)
+                with p.open("rb") as f:
+                    stat = p.stat()
+                    tarinfo = tarfile.TarInfo(name=p.name)
+                    tarinfo.size = stat.st_size
+                    tarinfo.mtime = stat.st_mtime
+                    tar.addfile(tarinfo=tarinfo, fileobj=f)
     tar_size = tar_buffer.tell()
     tar_buffer.seek(0)
     return tar_buffer, tar_size
