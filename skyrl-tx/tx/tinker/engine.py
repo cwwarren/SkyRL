@@ -27,6 +27,9 @@ from peft import LoraConfig
 logger = logging.getLogger(__name__)
 
 LEARNING_RATE = 1e-4
+ADAM_BETA1 = 0.9
+ADAM_BETA2 = 0.95
+ADAM_EPS = 1e-12
 
 
 def round_up_seq_len(seq_len: int) -> int:
@@ -123,7 +126,13 @@ class TinkerEngine:
             def is_lora_param(path, value):
                 return any(name in path for name in ["lora_A", "lora_B"])
 
-            self.optimizer = nnx.Optimizer(self.model, optax.adamw(LEARNING_RATE), wrt=is_lora_param)
+            opt = optax.inject_hyperparams(optax.adamw)(
+                learning_rate=LEARNING_RATE,
+                b1=ADAM_BETA1,
+                b2=ADAM_BETA2,
+                eps=ADAM_EPS,
+            )
+            self.optimizer = nnx.Optimizer(self.model, opt, wrt=is_lora_param)
 
             # Split model into LoRA and non-LoRA parameters
             self.graphdef, self.lora_params, self.non_lora_params = nnx.split(self.model, is_lora_param, ...)
@@ -458,9 +467,13 @@ class TinkerEngine:
 
         full_lora_grads = jax.tree.map(expand_adapter_grads, self.lora_params, adapter_grads)
 
-        # Apply optimizer update -- going forward we need to figure out how to use different learning rates per adapter
+        # Apply optimizer update with per-request overrides
+        hyperparams = self.optimizer.opt_state.hyperparams
         adam_params = request_data.adam_params
-        assert adam_params.lr == LEARNING_RATE, f"Currently we only support a fixed learning rate {LEARNING_RATE}"
+        hyperparams["learning_rate"][...] = adam_params.lr if adam_params.lr is not None else LEARNING_RATE
+        hyperparams["b1"][...] = adam_params.beta1 if adam_params.beta1 is not None else ADAM_BETA1
+        hyperparams["b2"][...] = adam_params.beta2 if adam_params.beta2 is not None else ADAM_BETA2
+        hyperparams["eps"][...] = adam_params.eps if adam_params.eps is not None else ADAM_EPS
         self.optimizer.update(self.lora_params, full_lora_grads)
 
         # Clear accumulated gradients

@@ -19,7 +19,10 @@ class RequestType(str, Enum):
 
 
 class AdamParams(BaseModel):
-    lr: float
+    lr: float | None = None
+    beta1: float | None = None
+    beta2: float | None = None
+    eps: float | None = None
 
 
 class LoraConfig(BaseModel):

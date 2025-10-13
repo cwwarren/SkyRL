@@ -117,6 +117,9 @@ class ForwardBackwardInput(BaseModel):
 
 class AdamParams(BaseModel):
     lr: float = 1e-4
+    beta1: float = 0.9
+    beta2: float = 0.95
+    eps: float = 1e-12
 
 
 class OptimStepRequest(BaseModel):
@@ -256,7 +259,14 @@ async def optim_step(request: OptimStepRequest, session: AsyncSession = Depends(
         session=session,
         request_type=types.RequestType.OPTIM_STEP,
         model_id=request.model_id,
-        request_data=types.OptimStepInput(adam_params=types.AdamParams(lr=request.adam_params.lr)),
+        request_data=types.OptimStepInput(
+            adam_params=types.AdamParams(
+                lr=request.adam_params.lr,
+                beta1=request.adam_params.beta1,
+                beta2=request.adam_params.beta2,
+                eps=request.adam_params.eps,
+            )
+        ),
     )
 
     await session.commit()

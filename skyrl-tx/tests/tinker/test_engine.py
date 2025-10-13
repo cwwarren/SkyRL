@@ -1,9 +1,12 @@
 from pathlib import Path
 
 import jax
+import jax.numpy as jnp
 import numpy as np
+import pytest
+from flax import nnx
 
-from tx.tinker.engine import TinkerEngine
+from tx.tinker.engine import TinkerEngine, ADAM_BETA1, ADAM_BETA2, ADAM_EPS
 from tx.tinker.config import EngineConfig
 from tx.tinker import types
 
@@ -200,3 +203,63 @@ def test_micro_batch_grad_accumulation():
     # Compare MEAN gradients with and without micro-batching
     _assert_tree_allclose(mean_micro_a1, mean_full_a1, rtol=1e-3, atol=5e-3)
     _assert_tree_allclose(mean_micro_a2, mean_full_a2, rtol=1e-3, atol=5e-3)
+
+
+def test_process_optim_step_hyperparams_behavior():
+    """Overrides apply via real requests, revert to defaults, and change update size."""
+    config = EngineConfig(
+        base_model="Qwen/Qwen3-0.6B",
+        checkpoints_base=Path(""),
+        max_lora_adapters=8,
+        max_lora_rank=32,
+    )
+
+    engine = TinkerEngine(config)
+
+    low_adapter = "adapter_low"
+    default_adapter = "adapter_default"
+
+    for model_id in (low_adapter, default_adapter):
+        engine.process_single_request(
+            types.RequestType.CREATE_MODEL,
+            model_id,
+            {"lora_config": {"rank": 32, "alpha": 32}},
+        )
+
+    tokens = [[1, 2, 3, 4], [5, 6, 7, 8]]
+
+    def apply_step(request_id: int, model_id: str, request: types.OptimStepInput) -> float:
+        engine.process_forward_backward_batch(
+            [(FutureStub(request_id), model_id, make_fwd_bwd_input(tokens))]
+        )
+        params_before = nnx.to_arrays(nnx.pure(engine.lora_params))
+        engine.process_optim_step(model_id, request)
+        params_after = nnx.to_arrays(nnx.pure(engine.lora_params))
+
+        delta = jax.tree.map(lambda a, b: a - b, params_after, params_before)
+        return jnp.sqrt(jax.tree.reduce(lambda a, x: a + (x.astype(jnp.float32) ** 2).sum(), delta, 0.0)).item()
+
+    tiny_request = types.OptimStepInput(
+        adam_params=types.AdamParams(lr=1e-8, beta1=0.0, beta2=0.0, eps=1e-9)
+    )
+    default_request = types.OptimStepInput(adam_params=types.AdamParams(lr=1e-4))
+
+    # Apply override step on the first adapter.
+    tiny_norm = apply_step(1, low_adapter, tiny_request)
+    hyperparams = engine.optimizer.opt_state.hyperparams
+    assert hyperparams["learning_rate"].value.item() == pytest.approx(1e-8, rel=5e-3)
+    assert hyperparams["b1"].value.item() == pytest.approx(0.0, abs=5e-4)
+    assert hyperparams["b2"].value.item() == pytest.approx(0.0, abs=5e-4)
+    assert hyperparams["eps"].value.item() == pytest.approx(1e-9, rel=5e-3)
+
+    # Apply fallback/default step on the second adapter (same engine).
+    default_norm = apply_step(2, default_adapter, default_request)
+    hyperparams = engine.optimizer.opt_state.hyperparams
+    assert hyperparams["learning_rate"].value.item() == pytest.approx(1e-4, rel=2e-3)
+    assert hyperparams["b1"].value.item() == pytest.approx(ADAM_BETA1, rel=2e-3)
+    assert hyperparams["b2"].value.item() == pytest.approx(ADAM_BETA2, rel=2e-3)
+    assert hyperparams["eps"].value.item() == pytest.approx(ADAM_EPS, rel=2e-3)
+
+    # Expect a large gap in update magnitude between the two adapters.
+    assert tiny_norm > 0
+    assert default_norm >= tiny_norm * 1e4
