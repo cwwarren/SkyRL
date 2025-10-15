@@ -410,12 +410,11 @@ async def download_checkpoint_archive(
         raise HTTPException(status_code=404, detail=f"Checkpoint not found: {unique_id}/{checkpoint_id}")
 
     file_buffer = await asyncio.to_thread(download_file, checkpoint_path)
-    file_size = file_buffer.getbuffer().nbytes
 
     filename = f"{unique_id}_{checkpoint_id}.tar.gz"
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
-        "Content-Length": str(file_size),
+        "Content-Length": str(file_buffer.getbuffer().nbytes),
     }
 
     return StreamingResponse(file_buffer, media_type="application/octet-stream", headers=headers)
