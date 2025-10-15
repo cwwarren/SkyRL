@@ -10,7 +10,7 @@ from transformers import AutoConfig, AutoTokenizer
 import typer
 
 from tx.loaders import get_loader
-from tx.utils.models import OptimizerName, get_dtype, get_model_class, get_optimizer, load_checkpoint, save_checkpoint
+from tx.utils.models import OptimizerName, get_dtype, get_model_class, get_optimizer, load_checkpoint, save_safetensors
 from tx.utils.log import ExperimentTracker, add_file_handler, get_tracker, logger
 
 app = typer.Typer()
@@ -99,9 +99,9 @@ def train(
 
         if step % save_steps == 0:
             logger.info(f"Saving checkpoint to {output_dir}")
-            save_checkpoint(config, model, output_dir / "model.safetensors")
+            save_safetensors(config, model, output_dir / "model.safetensors")
 
     logger.info(f"Saving final checkpoint to {output_dir}")
     config.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
-    save_checkpoint(config, model, output_dir / "model.safetensors")
+    save_safetensors(config, model, output_dir / "model.safetensors")

@@ -86,7 +86,7 @@ def load_checkpoint(checkpoint_dir: str | os.PathLike, config: PretrainedConfig,
     nnx.update(model, nnx.from_flat_state(updates))
 
 
-def save_checkpoint(config: PretrainedConfig, model: nnx.Module, file_path: Path) -> None:
+def save_safetensors(config: PretrainedConfig, model: nnx.Module, filename: Path) -> None:
     model_params = nnx.to_flat_state(nnx.state(model))
     tensors = {}
     for path, param in model_params:
@@ -102,19 +102,13 @@ def save_checkpoint(config: PretrainedConfig, model: nnx.Module, file_path: Path
         elif "o_proj" in path:
             param = param.reshape(-1, param.shape[-1])
         tensors[key] = param if "embed_tokens" in path else param.T
-
-    if isinstance(file_path, CloudPath):
-        with TemporaryDirectory() as temp_dir:
-            tmp_file = Path(temp_dir) / "model.safetensors"
-            safetensors.numpy.save_file(tensors, tmp_file)
-            file_path.upload_from(tmp_file)
-    else:
-        safetensors.numpy.save_file(tensors, file_path)
+    safetensors.numpy.save_file(tensors, filename)
 
 
-def save_adapter_config(adapter_config: LoraConfig, output_dir: Path) -> None:
+def save_lora_checkpoint(config: PretrainedConfig, adapter_config: LoraConfig, model: nnx.Module, output_dir: AnyPath):
     peft_config = PEFTLoraConfig(r=adapter_config.rank, lora_alpha=adapter_config.alpha)
     with staged_upload(output_dir) as temp_dir:
+        save_safetensors(config, model, temp_dir / "adapter_model.safetensors")
         peft_config.save_pretrained(temp_dir)
 
 

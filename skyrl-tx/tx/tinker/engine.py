@@ -25,11 +25,10 @@ from tx.tinker.config import EngineConfig, add_model
 from tx.utils.models import (
     get_dtype,
     get_model_class,
-    save_checkpoint,
+    save_lora_checkpoint,
     load_checkpoint,
     extract_adapter_state,
     insert_adapter_state,
-    save_adapter_config,
 )
 from tx.layers.lora import update_adapter_config
 
@@ -560,11 +559,8 @@ class TinkerEngine:
         # Collect LoRA rank for each layer and then the LoRA parameters for adapter_index
         adapter_lora_params = extract_adapter_state(adapter_index, self.lora_params, self.non_lora_params)
 
-        # Save only the LoRA adapter weights
-        save_checkpoint(self.model_config, adapter_lora_params, output_dir / "adapter_model.safetensors")
-
-        # Save LoRA config
-        save_adapter_config(self.models[model_id].lora_config, output_dir)
+        # Save the LoRA adapter weights and LoRA config
+        save_lora_checkpoint(self.model_config, self.models[model_id].lora_config, adapter_lora_params, output_dir)
 
         logger.info(f"Saved LoRA adapter weights for model {model_id} (adapter {adapter_index}) to {output_dir}")
 
