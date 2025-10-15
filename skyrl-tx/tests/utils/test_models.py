@@ -47,41 +47,29 @@ def test_save_load_lora_checkpoint(storage_type: str, monkeypatch, tmp_path: Pat
     else:
         output_path = tmp_path / "checkpoint.tar.gz"
 
-    # Create a small Qwen3 model
-    config, original_model = create_test_model()
+    config, model = create_test_model()
     adapter_config = LoraConfig(rank=8, alpha=16)
 
-    # Modify LoRA weights to specific values for testing
-    original_model.model.layers[0].self_attn.q_proj.lora_A.value = jnp.ones_like(
-        original_model.model.layers[0].self_attn.q_proj.lora_A.value
-    )
-    original_model.model.layers[0].self_attn.q_proj.lora_B.value = (
-        jnp.ones_like(original_model.model.layers[0].self_attn.q_proj.lora_B.value) * 2.0
-    )
+    # Set LoRA weights to known values for testing
+    q_proj = model.model.layers[0].self_attn.q_proj
+    q_proj.lora_A.value = jnp.ones_like(q_proj.lora_A.value)
+    q_proj.lora_B.value = jnp.ones_like(q_proj.lora_B.value) * 2.0
 
-    # Save the LoRA checkpoint as tar.gz
-    models.save_lora_checkpoint(original_model, adapter_config, adapter_index=0, output_path=output_path)
-
-    # Verify tar.gz file was created
+    # Save and verify checkpoint exists
+    models.save_lora_checkpoint(model, adapter_config, adapter_index=0, output_path=output_path)
     assert output_path.exists()
 
-    # Verify the checkpoint by loading it with peft
+    # Load with peft and verify
     with download_and_unpack(output_path) as extracted_dir:
-        # Create a base PyTorch model with the same config
         base_model = AutoModelForCausalLM.from_config(config)
-
-        # Load the adapter using peft
         peft_model = PeftModel.from_pretrained(base_model, extracted_dir)
 
-        # Verify the PEFT config
         assert peft_model.peft_config["default"].r == adapter_config.rank
         assert peft_model.peft_config["default"].lora_alpha == adapter_config.alpha
 
-        # Get the adapter weights from the loaded peft model
-        lora_A = peft_model.base_model.model.model.layers[0].self_attn.q_proj.lora_A["default"].weight
-        lora_B = peft_model.base_model.model.model.layers[0].self_attn.q_proj.lora_B["default"].weight
+        q_proj_adapter = peft_model.base_model.model.model.layers[0].self_attn.q_proj
+        lora_A = q_proj_adapter.lora_A["default"].weight
+        lora_B = q_proj_adapter.lora_B["default"].weight
 
-        # Verify the adapter weights match what we set
-        # PEFT loads the weights and we need to transpose to compare with our expected values
         assert torch.allclose(lora_A.T, torch.ones_like(lora_A.T), atol=1e-6)
         assert torch.allclose(lora_B.T, torch.ones_like(lora_B.T) * 2.0, atol=1e-6)
