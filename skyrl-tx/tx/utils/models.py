@@ -17,6 +17,7 @@ from transformers import PretrainedConfig
 from peft import LoraConfig as PEFTLoraConfig
 
 from tx import models
+from tx.utils.storage import staged_upload
 from tx.tinker.types import LoraConfig
 
 if TYPE_CHECKING:
@@ -113,12 +114,8 @@ def save_checkpoint(config: PretrainedConfig, model: nnx.Module, file_path: Path
 
 def save_adapter_config(adapter_config: LoraConfig, output_dir: Path) -> None:
     peft_config = PEFTLoraConfig(r=adapter_config.rank, lora_alpha=adapter_config.alpha)
-    if isinstance(output_dir, CloudPath):
-        with TemporaryDirectory() as temp_dir:
-            peft_config.save_pretrained(temp_dir)
-            output_dir.upload_from(temp_dir)
-    else:
-        peft_config.save_pretrained(output_dir)
+    with staged_upload(output_dir) as temp_dir:
+        peft_config.save_pretrained(temp_dir)
 
 
 class OptimizerName(str, Enum):
