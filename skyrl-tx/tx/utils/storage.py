@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import io
 from pathlib import Path
 import shutil
 import tarfile
@@ -7,7 +8,24 @@ from tempfile import TemporaryDirectory
 from typing import Generator
 from cloudpathlib import AnyPath, CloudPath
 
-from tx.tinker.api import create_tar_archive
+
+def create_tar_archive(checkpoint_dir: Path) -> tuple[io.BytesIO, int]:
+    """Create a tar.gz archive from a directory.
+
+    Args:
+        checkpoint_dir: Directory to archive
+
+    Returns:
+        Tuple of (BytesIO buffer containing tar.gz data, size of archive)
+    """
+    tar_buffer = io.BytesIO()
+    with tarfile.open(fileobj=tar_buffer, mode="w:gz") as tar:
+        for p in checkpoint_dir.iterdir():
+            if p.is_file():
+                tar.add(p, arcname=p.name)
+    tar_size = tar_buffer.tell()
+    tar_buffer.seek(0)
+    return tar_buffer, tar_size
 
 
 @contextmanager
@@ -67,3 +85,19 @@ def staged_download(source: Path | CloudPath) -> Generator[Path, None, None]:
                 tar.extractall(tmp_path, filter="data")
 
         yield tmp_path
+
+
+def download_file(source: AnyPath) -> io.BytesIO:
+    """Download a file from storage and return it as a BytesIO object.
+
+    Args:
+        source: Source path for the file (local or cloud)
+
+    Returns:
+        BytesIO object containing the file contents
+    """
+    buffer = io.BytesIO()
+    with source.open("rb") as f:
+        buffer.write(f.read())
+    buffer.seek(0)
+    return buffer

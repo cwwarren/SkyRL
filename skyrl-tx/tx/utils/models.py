@@ -19,8 +19,7 @@ from transformers import PretrainedConfig
 from peft import LoraConfig as PEFTLoraConfig
 
 from tx import models
-from tx.tinker.api import create_tar_archive
-from tx.utils.storage import staged_upload, staged_download
+from tx.utils.storage import staged_upload
 from tx.tinker.types import LoraConfig
 
 if TYPE_CHECKING:

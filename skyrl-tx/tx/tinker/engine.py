@@ -553,16 +553,20 @@ class TinkerEngine:
 
         # Make sure the user cannot store checkpoints in places like ../../<important file>
         checkpoint_id = Path(request_data.path).name
-        output_dir = self.config.checkpoints_base / model_id / checkpoint_id
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = self.config.checkpoints_base / model_id / f"{checkpoint_id}.tar.gz"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Collect LoRA rank for each layer and then the LoRA parameters for adapter_index
-        adapter_lora_params = extract_adapter_state(adapter_index, self.lora_params, self.non_lora_params)
+        # Save the LoRA adapter weights and LoRA config as tar.gz
+        save_lora_checkpoint(
+            self.model_config,
+            self.models[model_id].lora_config,
+            self.lora_params,
+            self.non_lora_params,
+            output_path,
+            adapter_index,
+        )
 
-        # Save the LoRA adapter weights and LoRA config
-        save_lora_checkpoint(self.model_config, self.models[model_id].lora_config, adapter_lora_params, output_dir)
-
-        logger.info(f"Saved LoRA adapter weights for model {model_id} (adapter {adapter_index}) to {output_dir}")
+        logger.info(f"Saved LoRA adapter weights for model {model_id} (adapter {adapter_index}) to {output_path}")
 
         return types.SaveWeightsForSamplerOutput(
             path=f"tinker://{model_id}/{checkpoint_id}",
