@@ -557,12 +557,10 @@ class TinkerEngine:
 
         # Save the LoRA adapter weights and LoRA config as tar.gz
         save_lora_checkpoint(
-            self.model_config,
+            self.model,
             self.models[model_id].lora_config,
-            self.lora_params,
-            self.non_lora_params,
-            output_path,
             adapter_index,
+            output_path,
         )
 
         logger.info(f"Saved LoRA adapter weights for model {model_id} (adapter {adapter_index}) to {output_path}")

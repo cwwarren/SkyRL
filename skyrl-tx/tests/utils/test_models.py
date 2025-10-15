@@ -56,9 +56,9 @@ def test_save_load_lora_checkpoint(storage_type: str, monkeypatch, tmp_path: Pat
     original_model.model.layers[0].self_attn.q_proj.lora_A.value = jnp.ones_like(
         original_model.model.layers[0].self_attn.q_proj.lora_A.value
     )
-    original_model.model.layers[0].self_attn.q_proj.lora_B.value = jnp.ones_like(
-        original_model.model.layers[0].self_attn.q_proj.lora_B.value
-    ) * 2.0
+    original_model.model.layers[0].self_attn.q_proj.lora_B.value = (
+        jnp.ones_like(original_model.model.layers[0].self_attn.q_proj.lora_B.value) * 2.0
+    )
 
     # Save the LoRA checkpoint as tar.gz
     models.save_lora_checkpoint(original_model, adapter_config, adapter_index=0, output_path=output_path)
