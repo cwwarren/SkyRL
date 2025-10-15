@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import create_async_engine
 import asyncio
 import logging
 import subprocess
-from cloudpathlib import AnyPath
 
 from tx.tinker import types
 from tx.tinker.config import EngineConfig, add_model, config_to_argv
@@ -405,7 +404,7 @@ async def download_checkpoint_archive(
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    checkpoint_path = AnyPath(request.app.state.engine_config.checkpoints_base) / unique_id / f"{checkpoint_id}.tar.gz"
+    checkpoint_path = request.app.state.engine_config.checkpoints_base / unique_id / f"{checkpoint_id}.tar.gz"
     if not checkpoint_path.exists():
         raise HTTPException(status_code=404, detail=f"Checkpoint not found: {unique_id}/{checkpoint_id}")
 
