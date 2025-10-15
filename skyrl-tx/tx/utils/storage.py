@@ -1,7 +1,6 @@
 from contextlib import contextmanager
 import io
 from pathlib import Path
-import shutil
 import tarfile
 import tempfile
 from tempfile import TemporaryDirectory
@@ -9,23 +8,22 @@ from typing import Generator
 from cloudpathlib import AnyPath, CloudPath
 
 
-def create_tar_archive(checkpoint_dir: Path) -> tuple[io.BytesIO, int]:
+def create_tar_archive(checkpoint_dir: Path) -> io.BytesIO:
     """Create a tar.gz archive from a directory.
 
     Args:
         checkpoint_dir: Directory to archive
 
     Returns:
-        Tuple of (BytesIO buffer containing tar.gz data, size of archive)
+        BytesIO buffer containing tar.gz data
     """
     tar_buffer = io.BytesIO()
     with tarfile.open(fileobj=tar_buffer, mode="w:gz") as tar:
         for p in checkpoint_dir.iterdir():
             if p.is_file():
                 tar.add(p, arcname=p.name)
-    tar_size = tar_buffer.tell()
     tar_buffer.seek(0)
-    return tar_buffer, tar_size
+    return tar_buffer
 
 
 @contextmanager
@@ -41,7 +39,7 @@ def staged_upload(dest: Path | CloudPath) -> Generator[Path, None, None]:
         yield tmp_path
 
         # Create tar archive of temp directory contents
-        tar_buffer, _ = create_tar_archive(tmp_path)
+        tar_buffer = create_tar_archive(tmp_path)
 
         # Upload/copy the tar file
         if isinstance(dest, CloudPath):

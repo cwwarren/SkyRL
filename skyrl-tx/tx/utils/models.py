@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 from enum import Enum
-import io
 import os
 from pathlib import Path
-import tarfile
 from typing import Callable, TYPE_CHECKING
-from tempfile import TemporaryDirectory
 
 from cloudpathlib import CloudPath
 from flax import nnx
