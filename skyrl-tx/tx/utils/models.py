@@ -123,7 +123,6 @@ def save_lora_checkpoint(
     peft_config = PEFTLoraConfig(
         r=adapter_config.rank,
         lora_alpha=adapter_config.alpha,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
     with pack_and_upload(output_path) as temp_dir:
         save_safetensors(config, adapter_lora_params, temp_dir / "adapter_model.safetensors")
