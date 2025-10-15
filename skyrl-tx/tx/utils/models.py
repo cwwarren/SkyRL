@@ -109,42 +109,29 @@ def save_safetensors(config: PretrainedConfig, model: nnx.Module, filename: Path
 
 
 def save_lora_checkpoint(
-    config: PretrainedConfig, adapter_config: LoraConfig, model: nnx.Module, output_path: Path | CloudPath
+    config: PretrainedConfig, adapter_config: LoraConfig, lora_params: nnx.GraphState, non_lora_params: nnx.GraphState, output_path: Path | CloudPath, adapter_index: int
 ):
     """Save a LoRA checkpoint as a tar.gz archive.
 
     Args:
         config: Model configuration
         adapter_config: LoRA adapter configuration
-        model: Model to save
+        lora_params: LoRA parameters from the model
+        non_lora_params: Non-LoRA parameters from the model
         output_path: Path to save the checkpoint tar.gz file
+        adapter_index: Index of the adapter to save
     """
-    peft_config = PEFTLoraConfig(r=adapter_config.rank, lora_alpha=adapter_config.alpha)
+    # Extract specific adapter's parameters
+    adapter_lora_params = extract_adapter_state(adapter_index, lora_params, non_lora_params)
+
+    peft_config = PEFTLoraConfig(
+        r=adapter_config.rank,
+        lora_alpha=adapter_config.alpha,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    )
     with staged_upload(output_path) as temp_dir:
-        save_safetensors(config, model, temp_dir / "adapter_model.safetensors")
+        save_safetensors(config, adapter_lora_params, temp_dir / "adapter_model.safetensors")
         peft_config.save_pretrained(temp_dir)
-
-
-def load_lora_checkpoint(checkpoint_path: Path | CloudPath, config: PretrainedConfig, model: nnx.Module) -> LoraConfig:
-    """Load a LoRA checkpoint from a tar.gz archive.
-
-    Args:
-        checkpoint_path: Path to the checkpoint tar.gz file
-        config: Model configuration
-        model: Model to load the LoRA weights into
-
-    Returns:
-        LoraConfig with rank and alpha from the checkpoint
-    """
-    with staged_download(checkpoint_path) as temp_dir:
-        # Load the PEFT config to get rank and alpha
-        peft_config = PEFTLoraConfig.from_pretrained(temp_dir)
-
-        # Load the weights using existing function
-        load_safetensors(temp_dir, config, model)
-
-    # Convert PEFT config to our LoraConfig
-    return LoraConfig(rank=peft_config.r, alpha=peft_config.lora_alpha)
 
 
 class OptimizerName(str, Enum):

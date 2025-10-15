@@ -3,19 +3,24 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
+import safetensors.numpy
 from cloudpathlib import CloudPath, implementation_registry
 from cloudpathlib.local import local_s3_implementation
 from flax import nnx
+from peft import LoraConfig as PEFTLoraConfig
 from transformers import AutoConfig
 
+from tx.layers.lora import update_adapter_config
 from tx.models import Qwen3ForCausalLM
 from tx.tinker.types import LoraConfig
 from tx.utils import models
+from tx.utils.storage import staged_download
 
 
 def create_test_model():
-    """Create a small Qwen3 model for testing."""
+    """Create a small Qwen3 model for testing with LoRA enabled."""
     config = AutoConfig.from_pretrained("Qwen/Qwen3-0.6B")
     # Make it smaller for testing
     config.num_hidden_layers = 1
@@ -23,10 +28,14 @@ def create_test_model():
     config.intermediate_size = 128
     config.num_attention_heads = 2
     config.num_key_value_heads = 2
+    config.max_lora_adapters = 5
+    config.max_lora_rank = 32
 
     mesh = jax.make_mesh((1, 1), ("dp", "tp"))
     with jax.set_mesh(mesh):
         model = Qwen3ForCausalLM(config, dtype=jnp.float32, rngs=nnx.Rngs(0))
+        update_adapter_config(model, adapter_index=0, lora_rank=8, lora_alpha=16)
+
     return config, model
 
 
@@ -44,52 +53,42 @@ def test_save_load_lora_checkpoint(storage_type: str, monkeypatch, tmp_path: Pat
     config, original_model = create_test_model()
     adapter_config = LoraConfig(rank=8, alpha=16)
 
+    # Modify LoRA weights to specific values for testing
+    original_model.model.layers[0].self_attn.q_proj.lora_A.value = jnp.ones_like(
+        original_model.model.layers[0].self_attn.q_proj.lora_A.value
+    )
+    original_model.model.layers[0].self_attn.q_proj.lora_B.value = jnp.ones_like(
+        original_model.model.layers[0].self_attn.q_proj.lora_B.value
+    ) * 2.0
+
+    # Split model into lora and non-lora parameters
+    def is_lora_param(path, value):
+        return any(name in path for name in ["lora_A", "lora_B"])
+
+    graphdef, lora_params, non_lora_params = nnx.split(original_model, is_lora_param, ...)
+
     # Save the LoRA checkpoint as tar.gz
-    models.save_lora_checkpoint(config, adapter_config, original_model, output_path)
+    models.save_lora_checkpoint(config, adapter_config, lora_params, non_lora_params, output_path, adapter_index=0)
 
     # Verify tar.gz file was created
     assert output_path.exists()
 
-    # Verify the tar.gz contains the expected files
-    import tarfile
-    if isinstance(output_path, CloudPath):
-        # Download to verify contents
-        temp_tar = tmp_path / "temp.tar.gz"
-        output_path.download_to(temp_tar)
-        tar_path = temp_tar
-    else:
-        tar_path = output_path
+    # Verify the checkpoint by extracting and loading it with safetensors
+    with staged_download(output_path) as extracted_dir:
+        # Load the PEFT config
+        peft_config = PEFTLoraConfig.from_pretrained(extracted_dir)
+        assert peft_config.r == adapter_config.rank
+        assert peft_config.lora_alpha == adapter_config.alpha
 
-    with tarfile.open(tar_path, "r:gz") as tar:
-        names = [member.name for member in tar.getmembers()]
-        assert "adapter_model.safetensors" in names
-        assert "adapter_config.json" in names
+        # Load the adapter weights directly from safetensors
+        adapter_weights = safetensors.numpy.load_file(extracted_dir / "adapter_model.safetensors")
 
-        # Verify adapter_config.json has correct content
-        config_file = tar.extractfile("adapter_config.json")
-        saved_config = json.loads(config_file.read())
-        assert saved_config["r"] == adapter_config.rank
-        assert saved_config["lora_alpha"] == adapter_config.alpha
-        assert saved_config["peft_type"] == "LORA"
+        # Verify the adapter weights match what we set
+        lora_A = adapter_weights["model.layers.0.self_attn.q_proj.lora_A.weight"]
+        lora_B = adapter_weights["model.layers.0.self_attn.q_proj.lora_B.weight"]
 
-    # Round trip: Load the checkpoint from tar.gz into a new model
-    _, loaded_model = create_test_model()
-    loaded_config = models.load_lora_checkpoint(output_path, config, loaded_model)
-
-    # Verify the config was loaded correctly
-    assert loaded_config.rank == adapter_config.rank
-    assert loaded_config.alpha == adapter_config.alpha
-
-    # Verify some weights match the original
-    original_state = nnx.state(original_model)
-    loaded_state = nnx.state(loaded_model)
-
-    # Compare a few key parameters
-    assert jnp.allclose(
-        original_state.model.layers[0].self_attn.q_proj.kernel.value,
-        loaded_state.model.layers[0].self_attn.q_proj.kernel.value,
-    )
-    assert jnp.allclose(
-        original_state.model.layers[0].self_attn.o_proj.kernel.value,
-        loaded_state.model.layers[0].self_attn.o_proj.kernel.value,
-    )
+        # Note: Our JAX model has shape (adapter_index, ..., features, rank) but we extract
+        # a single adapter, so the saved weights are (features, rank) and need to be transposed
+        # because save_safetensors does param.T
+        assert np.allclose(lora_A.T, np.ones_like(lora_A.T))
+        assert np.allclose(lora_B.T, np.ones_like(lora_B.T) * 2.0)
