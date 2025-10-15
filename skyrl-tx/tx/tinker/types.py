@@ -16,6 +16,8 @@ class RequestType(str, Enum):
     FORWARD_BACKWARD = "forward_backward"
     OPTIM_STEP = "optim_step"
     SAVE_WEIGHTS_FOR_SAMPLER = "save_weights_for_sampler"
+    SAVE_WEIGHTS = "save_weights"
+    LOAD_WEIGHTS = "load_weights"
 
 
 class AdamParams(BaseModel):
@@ -69,6 +71,28 @@ class SaveWeightsForSamplerOutput(BaseModel):
     type: str
 
 
+class SaveWeightsInput(BaseModel):
+    path: str
+
+
+class SaveWeightsOutput(BaseModel):
+    path: str
+    type: str
+
+
+class LoadWeightsInput(BaseModel):
+    path: str
+
+
+class LoadWeightsOutput(BaseModel):
+    type: str
+
+
 class ModelMetadata(BaseModel):
     adapter_index: int
     lora_config: LoraConfig
+
+
+# Metrics tracked in the engine
+class EngineMetrics(BaseModel):
+    seq_len_jit_times: dict[int, float] = {}
