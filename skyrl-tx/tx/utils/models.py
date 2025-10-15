@@ -54,12 +54,7 @@ def get_param_key(path: tuple, prefix: str = "") -> str:
     elif path[-1] in {"lora_A", "lora_B"}:
         path = (*path, "weight")
 
-    key = ".".join(map(str, path))
-
-    if prefix:
-        key = f"{prefix}{key}"
-
-    return key
+    return prefix + ".".join(map(str, path))
 
 
 def get_expert_key(path: tuple, expert_idx: int) -> str:
