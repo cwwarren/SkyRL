@@ -47,13 +47,19 @@ def get_model_class(config: PretrainedConfig) -> Callable[..., nnx.Module]:
     raise ValueError(f"None of the architectures {config.architectures} is currently supported.")
 
 
-def get_param_key(path: tuple) -> str:
+def get_param_key(path: tuple, prefix: str = "") -> str:
     "Get the safetensors key for a given model path."
     if path[-1] in {"embedding", "kernel"}:
         path = (*path[:-1], "weight")
     elif path[-1] in {"lora_A", "lora_B"}:
         path = (*path, "weight")
-    return ".".join(map(str, path))
+
+    key = ".".join(map(str, path))
+
+    if prefix:
+        key = f"{prefix}{key}"
+
+    return key
 
 
 def get_expert_key(path: tuple, expert_idx: int) -> str:
@@ -85,13 +91,13 @@ def load_safetensors(checkpoint_dir: str | os.PathLike, config: PretrainedConfig
     nnx.update(model, nnx.from_flat_state(updates))
 
 
-def save_safetensors(config: PretrainedConfig, model: nnx.Module, filename: Path) -> None:
+def save_safetensors(config: PretrainedConfig, model: nnx.Module, filename: Path, prefix: str = "") -> None:
     model_params = nnx.to_flat_state(nnx.state(model))
     tensors = {}
     for path, param in model_params:
         if "rngs" in path:
             continue
-        key = get_param_key(path)
+        key = get_param_key(path, prefix=prefix)
         if "experts" in path:
             for i in range(config.num_experts):
                 tensors[get_expert_key(path, i)] = param[i, :, :].T
@@ -125,7 +131,12 @@ def save_lora_checkpoint(
 
     peft_config = peft.LoraConfig(r=adapter_config.rank, lora_alpha=adapter_config.alpha)
     with pack_and_upload(output_path) as temp_dir:
-        save_safetensors(model.config, adapter_lora_params, temp_dir / "adapter_model.safetensors")
+        save_safetensors(
+            model.config,
+            adapter_lora_params,
+            temp_dir / "adapter_model.safetensors",
+            prefix="base_model.model.",
+        )
         peft_config.save_pretrained(temp_dir)
 
 

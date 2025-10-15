@@ -2,14 +2,13 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import pytest
-import safetensors.numpy
+import torch
 from cloudpathlib import CloudPath, implementation_registry
 from cloudpathlib.local import local_s3_implementation
 from flax import nnx
-from peft import LoraConfig as PEFTLoraConfig
-from transformers import AutoConfig
+from peft import PeftModel
+from transformers import AutoConfig, AutoModelForCausalLM
 
 from tx.layers.lora import update_adapter_config
 from tx.models import Qwen3ForCausalLM
@@ -66,22 +65,23 @@ def test_save_load_lora_checkpoint(storage_type: str, monkeypatch, tmp_path: Pat
     # Verify tar.gz file was created
     assert output_path.exists()
 
-    # Verify the checkpoint by extracting and loading it with safetensors
+    # Verify the checkpoint by loading it with peft
     with download_and_unpack(output_path) as extracted_dir:
-        # Load the PEFT config
-        peft_config = PEFTLoraConfig.from_pretrained(extracted_dir)
-        assert peft_config.r == adapter_config.rank
-        assert peft_config.lora_alpha == adapter_config.alpha
+        # Create a base PyTorch model with the same config
+        base_model = AutoModelForCausalLM.from_config(config)
 
-        # Load the adapter weights directly from safetensors
-        adapter_weights = safetensors.numpy.load_file(extracted_dir / "adapter_model.safetensors")
+        # Load the adapter using peft
+        peft_model = PeftModel.from_pretrained(base_model, extracted_dir)
+
+        # Verify the PEFT config
+        assert peft_model.peft_config["default"].r == adapter_config.rank
+        assert peft_model.peft_config["default"].lora_alpha == adapter_config.alpha
+
+        # Get the adapter weights from the loaded peft model
+        lora_A = peft_model.base_model.model.model.layers[0].self_attn.q_proj.lora_A["default"].weight
+        lora_B = peft_model.base_model.model.model.layers[0].self_attn.q_proj.lora_B["default"].weight
 
         # Verify the adapter weights match what we set
-        lora_A = adapter_weights["model.layers.0.self_attn.q_proj.lora_A.weight"]
-        lora_B = adapter_weights["model.layers.0.self_attn.q_proj.lora_B.weight"]
-
-        # Note: Our JAX model has shape (adapter_index, ..., features, rank) but we extract
-        # a single adapter, so the saved weights are (features, rank) and need to be transposed
-        # because save_safetensors does param.T
-        assert np.allclose(lora_A.T, np.ones_like(lora_A.T))
-        assert np.allclose(lora_B.T, np.ones_like(lora_B.T) * 2.0)
+        # PEFT loads the weights and we need to transpose to compare with our expected values
+        assert torch.allclose(lora_A.T, torch.ones_like(lora_A.T), atol=1e-6)
+        assert torch.allclose(lora_B.T, torch.ones_like(lora_B.T) * 2.0, atol=1e-6)
