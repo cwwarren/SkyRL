@@ -143,7 +143,7 @@ def test_create_tar_archive(tmp_path):
 
     fixed_mtime = int(time.time()) - 5
     os.utime(file1, (fixed_mtime, fixed_mtime))
-    os.utime(file2, (fixed_mtime+1, fixed_mtime+1))
+    os.utime(file2, (fixed_mtime + 1, fixed_mtime + 1))
 
     buffer, _ = create_tar_archive(tmp_path)
 

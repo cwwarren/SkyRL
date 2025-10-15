@@ -29,7 +29,7 @@ from tx.utils.models import (
     load_checkpoint,
     extract_adapter_state,
     insert_adapter_state,
-    save_adapter_config
+    save_adapter_config,
 )
 from tx.layers.lora import update_adapter_config
 
