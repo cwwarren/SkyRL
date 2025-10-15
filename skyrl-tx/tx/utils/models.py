@@ -105,19 +105,22 @@ def save_safetensors(config: PretrainedConfig, model: nnx.Module, filename: Path
 
 
 def save_lora_checkpoint(
-    config: PretrainedConfig, adapter_config: LoraConfig, lora_params: nnx.GraphState, non_lora_params: nnx.GraphState, output_path: Path | CloudPath, adapter_index: int
+    model: models.Qwen3ForCausalLM, adapter_config: LoraConfig, adapter_index: int, output_path: Path | CloudPath
 ):
     """Save a LoRA checkpoint as a tar.gz archive.
 
     Args:
-        config: Model configuration
+        model: The Qwen3ForCausalLM model to extract LoRA parameters from
         adapter_config: LoRA adapter configuration
-        lora_params: LoRA parameters from the model
-        non_lora_params: Non-LoRA parameters from the model
-        output_path: Path to save the checkpoint tar.gz file
         adapter_index: Index of the adapter to save
+        output_path: Path to save the checkpoint tar.gz file
     """
-    # Extract specific adapter's parameters
+
+    def is_lora_param(path, value):
+        return any(name in path for name in ["lora_A", "lora_B"])
+
+    _, lora_params, non_lora_params = nnx.split(model, is_lora_param, ...)
+
     adapter_lora_params = extract_adapter_state(adapter_index, lora_params, non_lora_params)
 
     peft_config = PEFTLoraConfig(
@@ -125,7 +128,7 @@ def save_lora_checkpoint(
         lora_alpha=adapter_config.alpha,
     )
     with pack_and_upload(output_path) as temp_dir:
-        save_safetensors(config, adapter_lora_params, temp_dir / "adapter_model.safetensors")
+        save_safetensors(model.config, adapter_lora_params, temp_dir / "adapter_model.safetensors")
         peft_config.save_pretrained(temp_dir)
 
 

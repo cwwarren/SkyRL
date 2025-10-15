@@ -60,14 +60,8 @@ def test_save_load_lora_checkpoint(storage_type: str, monkeypatch, tmp_path: Pat
         original_model.model.layers[0].self_attn.q_proj.lora_B.value
     ) * 2.0
 
-    # Split model into lora and non-lora parameters
-    def is_lora_param(path, value):
-        return any(name in path for name in ["lora_A", "lora_B"])
-
-    graphdef, lora_params, non_lora_params = nnx.split(original_model, is_lora_param, ...)
-
     # Save the LoRA checkpoint as tar.gz
-    models.save_lora_checkpoint(config, adapter_config, lora_params, non_lora_params, output_path, adapter_index=0)
+    models.save_lora_checkpoint(original_model, adapter_config, adapter_index=0, output_path=output_path)
 
     # Verify tar.gz file was created
     assert output_path.exists()
