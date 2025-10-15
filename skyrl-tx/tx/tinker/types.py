@@ -88,6 +88,11 @@ class OptimStepOutput(BaseModel):
     pass
 
 
+class OptimStepError(BaseModel):
+    error: str
+    status: str
+
+
 class SaveWeightsForSamplerInput(BaseModel):
     path: str
 

@@ -21,7 +21,7 @@ from huggingface_hub import snapshot_download
 
 from tx.tinker.db_models import FutureDB, DB_PATH, RequestStatus
 from tx.tinker import types
-from tx.tinker.config import EngineConfig, add_model, LEARNING_RATE, ADAM_BETA1, ADAM_BETA2, ADAM_EPS, ADAM_WEIGHT_DECAY
+from tx.tinker.config import EngineConfig, add_model, LEARNING_RATE, ADAM_BETA1, ADAM_BETA2, ADAM_EPS, ADAM_WEIGHT_DECAY, LEARNING_RATE, ADAM_BETA1, ADAM_BETA2, ADAM_EPS, ADAM_WEIGHT_DECAY
 from tx.utils.storage import download_and_unpack, pack_and_upload
 from tx.utils.models import (
     get_dtype,
@@ -30,9 +30,12 @@ from tx.utils.models import (
     load_safetensors,
     extract_adapter_state,
     insert_adapter_state,
+    extract_optimizer_state,
+    insert_optimizer_state,
 )
 from tx.layers.lora import update_adapter_config
 from tx.utils import opt
+from peft import LoraConfig
 
 logger = logging.getLogger(__name__)
 
@@ -59,37 +62,45 @@ def round_up_seq_len(seq_len: int) -> int:
 
     return result
 
+@jax.jit
+def _get_mean_grads(grad_sum: nnx.State, denominator: jax.Array, mask: jax.Array) -> nnx.State:
+    """Compute mean gradients."""
+    return jax.tree.map(lambda g: g / opt._x(jnp.where(mask, denominator, 1).astype(g.dtype), g) * opt._x(mask, g), grad_sum)
+
+@jax.jit
+def _accumulate_grads(grad_sum: nnx.State, denominator: jax.Array, lora_grads: nnx.State, count: jax.Array) -> tuple[nnx.State, jax.Array]:
+    """Accumulate adapter-wise gradient sums and example counts."""
+    mask = count > 0
+
+    grad_sum = jax.tree.map(lambda buf, grad: jnp.where(opt._x(mask, buf), buf + grad, buf), grad_sum, lora_grads)
+    denominator = denominator + count
+    return grad_sum, denominator
+
+@jax.jit
+def _reset_grads(grad_sum: nnx.State, denominator: jax.Array, mask: jax.Array) -> tuple[nnx.State, jax.Array]:
+    """Clear accumulated gradients and reset denominator."""
+    grad_sum = jax.tree.map(lambda x: jnp.where(opt._x(mask, x), jnp.zeros_like(x), x), grad_sum)
+    denominator = jnp.where(mask, 0, denominator)
+    return grad_sum, denominator
 
 @dataclass
 class AccumulatedGradients:
     """Stores accumulated gradients for a LoRA adapter."""
 
-    grad_sum: nnx.State | None
-    denominator: int
+    grad_sum: nnx.State
+    denominator: jax.Array
 
-    def add(self, grad: nnx.State, count: int) -> None:
+    def add(self, grad: nnx.State, count: jax.Array) -> None:
         """Accumulate gradients and increment denominator."""
-        if self.grad_sum is None:
-            self.grad_sum = grad
-            self.denominator = count
-        else:
-            self.grad_sum = jax.tree.map(lambda a, b: a + b, self.grad_sum, grad)
-            self.denominator += count
+        self.grad_sum, self.denominator = _accumulate_grads(self.grad_sum, self.denominator, grad, count)
 
-    def get_mean(self) -> nnx.State:
+    def get_mean(self, mask: jax.Array) -> nnx.State:
         """Compute mean gradients."""
-        if self.grad_sum is None or self.denominator == 0:
-            raise ValueError("Cannot compute mean: no gradients accumulated")
-        return jax.tree.map(
-            lambda g: g / jnp.asarray(self.denominator, dtype=g.dtype),
-            self.grad_sum,
-        )
+        return _get_mean_grads(self.grad_sum, self.denominator, mask)
 
-    def reset(self) -> None:
-        """Clear accumulated gradients."""
-        self.grad_sum = None
-        self.denominator = 0
-
+    def reset(self, mask: jax.Array) -> None:
+        """Clear accumulated gradients and reset denominator."""
+        self.grad_sum, self.denominator = _reset_grads(self.grad_sum, self.denominator, mask)
 
 class TinkerEngine:
     """Background engine for processing training requests."""
@@ -104,8 +115,6 @@ class TinkerEngine:
         self.db_engine = create_engine(f"sqlite:///{db_path}", echo=False)
         # Store LoRA model metadata (model_id -> metadata)
         self.models: dict[str, types.ModelMetadata] = {}
-        # Store accumulated gradients per LoRA adapter (model_id -> accumulated gradients)
-        self.accumulated_grads: dict[str, AccumulatedGradients] = {}
         # Metrics recorded in the engine
         self.metrics = types.EngineMetrics()
 
@@ -135,16 +144,14 @@ class TinkerEngine:
             # Split model into LoRA and non-LoRA parameters
             self.graphdef, self.lora_params, self.non_lora_params = nnx.split(self.model, is_lora_param, ...)
 
-            # Initialize optimizer state and hyperparameters
-            self.opt_state, self.opt_hyper = opt.adamw_init(
-                self.config.max_lora_adapters,
-                self.lora_params,
-                lr=LEARNING_RATE,
-                b1=ADAM_BETA1,
-                b2=ADAM_BETA2,
-                eps=ADAM_EPS,
-                wd=ADAM_WEIGHT_DECAY,
+            # Store accumulated gradients per LoRA adapter
+            self.accumulated_grads = AccumulatedGradients(
+                grad_sum=jax.tree.map(jnp.zeros_like, self.lora_params),
+                denominator=jnp.zeros((self.config.max_lora_adapters,), dtype=jnp.int32),
             )
+
+            # Initialize optimizer state and hyperparameters
+            self.opt_state, self.opt_hyper = opt.adamw_init(self.config.max_lora_adapters, self.lora_params, lr=LEARNING_RATE, b1=ADAM_BETA1, b2=ADAM_BETA2, eps=ADAM_EPS, wd=ADAM_WEIGHT_DECAY)
             self.opt_step = jax.jit(opt.adamw_step) if not self.config.enforce_eager else opt.adamw_step
 
         logger.info(
@@ -242,17 +249,6 @@ class TinkerEngine:
         target_logprobs = jnp.take_along_axis(logprobs, target_ids[..., None], axis=-1).squeeze(-1)  # [B, T]
         return per_token_losses, target_logprobs, lora_grads
 
-    def _accumulate_grads(self, lora_grads: nnx.State, example_model_ids: list[str]) -> None:
-        """
-        Accumulate adapter-wise gradient sums and example counts.
-        """
-        for model_id, count in Counter(example_model_ids).items():
-            idx = self.models[model_id].adapter_index
-            # Extract gradient sum for this adapter
-            grad_sum = jax.tree.map(lambda g: g[idx], lora_grads)
-            accumulator = self.accumulated_grads[model_id]
-            accumulator.add(grad_sum, count)
-
     def find_batchable_forward_backward(self, session: Session) -> list[FutureDB]:
         """Find all forward_backward ops that come before any destructive update for their model.
 
@@ -291,6 +287,45 @@ class TinkerEngine:
 
         return batchable
 
+    def find_batchable_optim_step(self, session: Session) -> list[FutureDB]:
+        """Return the earliest pending optim_step per model_id.
+
+        We only surface an optim_step when it is the head-of-line request for its model so we
+        never reorder relative to prior operations like load_weights.
+        """
+
+        head_subquery = (
+            select(
+                FutureDB.model_id,
+                func.min(FutureDB.request_id).label("first_request_id"),
+            )
+            .where(FutureDB.status == RequestStatus.PENDING)
+            .group_by(FutureDB.model_id)
+        ).subquery()
+
+        min_forward_backward_id = session.exec(
+            select(func.min(FutureDB.request_id)).where(
+                (FutureDB.status == RequestStatus.PENDING)
+                & (FutureDB.request_type == types.RequestType.FORWARD_BACKWARD)
+            )
+        ).one_or_none()
+
+        statement = (
+            select(FutureDB)
+            .join(
+                head_subquery,
+                (FutureDB.model_id == head_subquery.c.model_id)
+                & (FutureDB.request_id == head_subquery.c.first_request_id),
+            )
+            .where(FutureDB.request_type == types.RequestType.OPTIM_STEP)
+            .order_by(FutureDB.request_id)
+        )
+
+        if min_forward_backward_id is not None:
+            statement = statement.where(FutureDB.request_id < min_forward_backward_id)
+
+        return session.exec(statement).all()
+
     def process_create_model(self, model_id: str, request_data: types.CreateModelInput) -> types.CreateModelOutput:
         """Create and initialize a model."""
         # Assign adapter index for this model_id
@@ -311,7 +346,7 @@ class TinkerEngine:
             adapter_index=adapter_index,
             lora_config=request_data.lora_config,
         )
-        self.accumulated_grads[model_id] = AccumulatedGradients(grad_sum=None, denominator=0)
+        self.accumulated_grads.reset(jax.nn.one_hot(adapter_index, self.config.max_lora_adapters, dtype=jnp.bool_))
 
         # Update the adapter's rank and scaling in all LoRA layers
         update_adapter_config(self.model, adapter_index, lora_rank, lora_alpha)
@@ -421,7 +456,8 @@ class TinkerEngine:
                 L = seq_lens[i_global]
                 token_losses_out[i_global] = per_token_losses[i_local, :L].astype(jnp.float32)
                 logprobs_out[i_global] = target_logprobs[i_local, :L].astype(jnp.float32)
-            self._accumulate_grads(lora_grads_mb, example_model_ids[mb_start:mb_end])
+            count = jnp.bincount(adapter_indices[mb_start:mb_end], length=self.config.max_lora_adapters)
+            self.accumulated_grads.add(lora_grads_mb, count)
 
         # Compute per-request results
         for request_id, _, start_idx, end_idx in request_batch_slices:
@@ -454,54 +490,56 @@ class TinkerEngine:
 
         return results
 
-    def process_optim_step(self, model_id: str, request_data: types.OptimStepInput) -> types.OptimStepOutput:
+
+    def process_optim_step_batch(
+        self, requests: list[tuple[FutureDB, str, types.OptimStepInput]]
+    ) -> dict[str, types.OptimStepOutput | types.OptimStepError]:
         """Process an optim_step request and apply accumulated gradients."""
-        if model_id not in self.models:
-            raise ValueError(f"Model {model_id} not loaded")
+        mask = jnp.zeros((self.config.max_lora_adapters,), dtype=jnp.bool_)
+        full_lora_grads = jax.tree.map(jnp.zeros_like, self.lora_params)
+        opt_hyper = self.opt_hyper.copy()
+        results = {}
 
-        adapter_index = self.models[model_id].adapter_index
+        for future, model_id, request_data in requests:
+            if model_id not in self.models:
+                results[future.request_id] = types.OptimStepError(
+                    error=f"Model {model_id} not loaded",
+                    status="failed",
+                )
+                continue
+            adapter_index = self.models[model_id].adapter_index
 
-        # Get accumulated gradients for this adapter
-        accumulator = self.accumulated_grads[model_id]
-        if accumulator.grad_sum is None or accumulator.denominator == 0:
-            logger.warning(f"No accumulated gradients for model {model_id}, skipping optimizer step")
-            return types.OptimStepOutput()
+            # Beyond this point we are either running the optimizer step or gracefully skipping it
+            results[future.request_id] = types.OptimStepOutput()
 
-        # Average over all examples for this adapter
-        adapter_grads = accumulator.get_mean()
+            mask = mask.at[adapter_index].set(True)
 
-        # Create full gradient structure with zeros for all adapters except this one
-        def expand_adapter_grads(lora_param, adapter_grad):
-            # Create zeros for all adapters with the same shape as lora_param
-            full_grads = jnp.zeros_like(lora_param)
-            # Set gradients for this specific adapter
-            return full_grads.at[adapter_index].set(adapter_grad)
+            # Override the optimizer hyperparameters for this adapter
+            if request_data.adam_params.lr is not None:
+                opt_hyper["lr"] = opt_hyper["lr"].at[adapter_index].set(request_data.adam_params.lr)
+            if request_data.adam_params.beta1 is not None:
+                opt_hyper["b1"] = opt_hyper["b1"].at[adapter_index].set(request_data.adam_params.beta1)
+            if request_data.adam_params.beta2 is not None:
+                opt_hyper["b2"] = opt_hyper["b2"].at[adapter_index].set(request_data.adam_params.beta2)
+            if request_data.adam_params.eps is not None:
+                opt_hyper["eps"] = opt_hyper["eps"].at[adapter_index].set(request_data.adam_params.eps)
 
-        full_lora_grads = jax.tree.map(expand_adapter_grads, self.lora_params, adapter_grads)
+        # Ignore adapters with no accumulated gradients
+        mask = jnp.logical_and(mask, self.accumulated_grads.denominator != 0)
 
-        # Apply optimizer update with per-request overrides
-        mask = jax.nn.one_hot(adapter_index, self.config.max_lora_adapters, dtype=jnp.bool_)
-        self.opt_hyper.lr = self.opt_hyper.lr.at[adapter_index].set(
-            request_data.adam_params.lr if request_data.adam_params.lr is not None else LEARNING_RATE
-        )
-        self.opt_hyper.b1 = self.opt_hyper.b1.at[adapter_index].set(
-            request_data.adam_params.beta1 if request_data.adam_params.beta1 is not None else ADAM_BETA1
-        )
-        self.opt_hyper.b2 = self.opt_hyper.b2.at[adapter_index].set(
-            request_data.adam_params.beta2 if request_data.adam_params.beta2 is not None else ADAM_BETA2
-        )
-        self.opt_hyper.eps = self.opt_hyper.eps.at[adapter_index].set(
-            request_data.adam_params.eps if request_data.adam_params.eps is not None else ADAM_EPS
-        )
-        self.lora_params, self.opt_state = self.opt_step(
-            self.lora_params, full_lora_grads, self.opt_state, self.opt_hyper, mask
-        )
+        full_lora_grads = self.accumulated_grads.get_mean(mask)
+
+        # If no adapters are being optimized, return early
+        if not jnp.any(mask):
+            return results
+
+        # Apply optimizer update
+        self.lora_params, self.opt_state = self.opt_step(self.lora_params, full_lora_grads, self.opt_state, opt_hyper, mask)
 
         # Clear accumulated gradients
-        self.accumulated_grads[model_id].reset()
+        self.accumulated_grads.reset(mask)
 
-        logger.info(f"Applied optimizer step for model {model_id} (adapter {adapter_index})")
-        return types.OptimStepOutput()
+        return results
 
     def process_load_weights(self, model_id: str, request_data: types.LoadWeightsInput) -> types.LoadWeightsOutput:
         """Loads a clean, trimmed training checkpoint."""
@@ -528,9 +566,10 @@ class TinkerEngine:
 
         # Update both LoRA weights and optimizer state
         insert_adapter_state(adapter_index, self.lora_params, self.non_lora_params, restored_data["lora_weights"])
-        insert_adapter_state(
-            adapter_index, nnx.state(self.optimizer), self.non_lora_params, restored_data["optimizer_state"]
+        self.opt_state = insert_optimizer_state(
+            adapter_index, self.opt_state, self.non_lora_params, restored_data["optimizer_state"]
         )
+        self.accumulated_grads.reset(jax.nn.one_hot(adapter_index, self.config.max_lora_adapters, dtype=jnp.bool_))
 
         logger.info(f"Loaded training checkpoint for model {model_id} from {checkpoint_dir}")
         return types.LoadWeightsOutput(type="load_weights")
@@ -548,7 +587,7 @@ class TinkerEngine:
         output_path = self.config.checkpoints_base / model_id / f"{checkpoint_id}.tar.gz"
 
         adapter_lora_params = extract_adapter_state(adapter_index, self.lora_params, self.non_lora_params)
-        optimizer_params = extract_adapter_state(adapter_index, nnx.state(self.optimizer), self.non_lora_params)
+        optimizer_params = extract_optimizer_state(adapter_index, self.opt_state, self.non_lora_params)
 
         with pack_and_upload(output_path) as temp_dir:
             checkpoints.save_checkpoint(
@@ -614,8 +653,6 @@ class TinkerEngine:
         match request_type:
             case types.RequestType.CREATE_MODEL:
                 result = self.process_create_model(model_id, types.CreateModelInput.model_validate(request_data))
-            case types.RequestType.OPTIM_STEP:
-                result = self.process_optim_step(model_id, types.OptimStepInput.model_validate(request_data))
             case types.RequestType.SAVE_WEIGHTS_FOR_SAMPLER:
                 result = self.process_save_weights_for_sampler(
                     model_id, types.SaveWeightsForSamplerInput.model_validate(request_data)
@@ -634,14 +671,16 @@ class TinkerEngine:
         """Main loop to process pending requests."""
         while True:
             with Session(self.db_engine) as session:
-                # Use look-ahead scheduling to find batchable forward_backward operations
+                # Use look-ahead scheduling to find batchable forward_backward and optim_step operations
                 forward_backward_futures = self.find_batchable_forward_backward(session)
+                optim_step_futures = self.find_batchable_optim_step(session)
 
                 # Get other pending requests (non-forward_backward or those blocked by optim_step)
                 statement = (
                     select(FutureDB)
                     .where(FutureDB.status == RequestStatus.PENDING)
                     .where(FutureDB.request_type != types.RequestType.FORWARD_BACKWARD)
+                    .where(FutureDB.request_type != types.RequestType.OPTIM_STEP)
                     .order_by(FutureDB.request_id)
                 )
                 other_futures = session.exec(statement).all()
@@ -680,7 +719,42 @@ class TinkerEngine:
                             session.add(future)
                         session.commit()
 
-                # Process other request types individually (in the future we can also batch independent optim_steps)
+                # Process optim_step requests in batch
+                if optim_step_futures:
+                    try:
+                        batch_requests = [
+                            (f, f.model_id, types.OptimStepInput.model_validate(f.request_data))
+                            for f in optim_step_futures
+                        ]
+                        results = self.process_optim_step_batch(batch_requests)
+
+                        for future in optim_step_futures:
+                            result_data = results.get(future.request_id)
+                            if result_data is None:
+                                future.result_data = {"error": "optimizer batch did not return a result"}
+                                future.status = RequestStatus.FAILED
+                            else:
+                                if isinstance(result_data, types.OptimStepError):
+                                    future.status = RequestStatus.FAILED
+                                else:
+                                    future.status = RequestStatus.COMPLETED
+                                future.result_data = result_data.model_dump()
+                            future.completed_at = datetime.now(timezone.utc)
+                            session.add(future)
+                            logger.info(f"Completed {future.request_type} request {future.request_id}")
+
+                        session.commit()
+
+                    except Exception as e:
+                        logger.exception(f"Error processing optim_step batch: {e}")
+                        for future in optim_step_futures:
+                            future.result_data = {"error": str(e)}
+                            future.status = RequestStatus.FAILED
+                            future.completed_at = datetime.now(timezone.utc)
+                            session.add(future)
+                        session.commit()
+
+                # Process other request types individually
                 for future in other_futures:
                     try:
                         future.result_data = self.process_single_request(

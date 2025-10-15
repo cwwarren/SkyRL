@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from enum import Enum
+import logging
 import os
 from pathlib import Path
-from typing import Callable, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING
 
 from cloudpathlib import CloudPath
 from flax import nnx
@@ -18,9 +19,12 @@ import peft
 from tx import models
 from tx.utils.storage import pack_and_upload
 from tx.tinker.types import LoraConfig
+from tx.utils.opt import AdamState
 
 if TYPE_CHECKING:
     import torch
+
+logger = logging.getLogger(__name__)
 
 
 def get_dtype(dtype: str | torch.dtype) -> jnp.dtype:
@@ -195,3 +199,48 @@ def insert_adapter_state(
 
     updated = jax.tree.map_with_path(insert_state, nnx.to_pure_dict(lora_params), new_params)
     nnx.update(lora_params, updated)
+
+
+def extract_optimizer_state(
+    adapter_index: int, opt_state: AdamState, non_lora_params: nnx.GraphState
+) -> dict[str, Any]:
+    """Return the optimizer state slice for the given adapter index."""
+    # Momentum and velocity share the same tree structure as LoRA params
+    m_state = extract_adapter_state(adapter_index, opt_state["m"], non_lora_params)
+    v_state = extract_adapter_state(adapter_index, opt_state["v"], non_lora_params)
+    return {
+        "m": nnx.to_pure_dict(m_state),
+        "v": nnx.to_pure_dict(v_state),
+        "b1": jax.device_get(opt_state["b1"][adapter_index]).item(),
+        "b2": jax.device_get(opt_state["b2"][adapter_index]).item(),
+    }
+
+
+def insert_optimizer_state(
+    adapter_index: int,
+    opt_state: AdamState,
+    non_lora_params: nnx.GraphState,
+    restored_state: dict[str, Any],
+) -> AdamState:
+    """Restore the optimizer state slice for the given adapter index."""
+    if missing_keys := sorted({"m", "v", "b1", "b2"}.difference(restored_state)):
+        logger.warning(
+            "optimizer_state payload is missing expected keys "
+            f"({', '.join(missing_keys)}). Ensure the checkpoint was produced by the AdamW"
+            " optimizer path introduced with opt.AdamState."
+        )
+        template = extract_adapter_state(adapter_index, opt_state["m"], non_lora_params)
+        state = nnx.to_pure_dict(jax.tree.map(jnp.zeros_like, template))
+        insert_adapter_state(adapter_index, opt_state["m"], non_lora_params, state)
+        insert_adapter_state(adapter_index, opt_state["v"], non_lora_params, state)
+
+        opt_state["b1"] = opt_state["b1"].at[adapter_index].set(jnp.ones((), dtype=opt_state["b1"].dtype))
+        opt_state["b2"] = opt_state["b2"].at[adapter_index].set(jnp.ones((), dtype=opt_state["b2"].dtype))
+
+        return opt_state
+
+    insert_adapter_state(adapter_index, opt_state["m"], non_lora_params, restored_state["m"])
+    insert_adapter_state(adapter_index, opt_state["v"], non_lora_params, restored_state["v"])
+    opt_state["b1"] = opt_state["b1"].at[adapter_index].set(restored_state["b1"])
+    opt_state["b2"] = opt_state["b2"].at[adapter_index].set(restored_state["b2"])
+    return opt_state

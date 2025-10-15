@@ -7,7 +7,7 @@ import pytest
 from flax import nnx
 
 from tx.tinker.engine import TinkerEngine
-from tx.tinker.config import EngineConfig, ADAM_BETA1, ADAM_BETA2, ADAM_EPS
+from tx.tinker.config import EngineConfig, ADAM_BETA1, ADAM_BETA2, ADAM_EPS, LEARNING_RATE
 from tx.tinker import types
 
 
@@ -98,11 +98,11 @@ def test_adapter_gradient_calculation():
     # Process round 1 batch
     engine.process_forward_backward_batch(reqs_round1)
 
-    grads_A1_round1 = jax.tree.map(lambda x: x.copy(), engine.accumulated_grads[adapter1_id].grad_sum)
+    grads_A1_round1 = jax.tree.map(lambda x: x[0], engine.accumulated_grads.grad_sum)
 
     # Clear stored grads so we can run another fwd/bwd without optimizer update.
-    engine.accumulated_grads[adapter1_id].reset()
-    engine.accumulated_grads[adapter2_id].reset()
+    engine.accumulated_grads.reset(jax.nn.one_hot(0, engine.config.max_lora_adapters, dtype=jnp.bool_))
+    engine.accumulated_grads.reset(jax.nn.one_hot(1, engine.config.max_lora_adapters, dtype=jnp.bool_))
 
     a1_input = make_fwd_bwd_input([[1, 2, 3, 4], [5, 6, 7, 8]])
     a2_input2 = make_fwd_bwd_input([[9, 10, 11, 12], [13, 14, 15, 16], [17, 18, 19, 20], [21, 22, 23, 24]])
@@ -114,7 +114,7 @@ def test_adapter_gradient_calculation():
     # Process round 2 batch
     engine.process_forward_backward_batch(reqs_round2)
 
-    grads_A1_round2 = jax.tree.map(lambda x: x.copy(), engine.accumulated_grads[adapter1_id].grad_sum)
+    grads_A1_round2 = jax.tree.map(lambda x: x[0], engine.accumulated_grads.grad_sum)
 
     # Compare gradients using 99% match threshold
     _assert_tree_allclose(grads_A1_round1, grads_A1_round2, rtol=1e-3, atol=1e-2, min_match_pct=99.0)
@@ -161,16 +161,15 @@ def test_micro_batch_grad_accumulation():
         (FutureStub(1002), adapter2_id, a2_input),
     ]
 
+    mask = jnp.array([True, True] + [False] * 6, dtype=jnp.bool_)
+
     # Run 1: micro-batching enabled
     engine.process_forward_backward_batch(reqs)
-    acc_micro_a1 = engine.accumulated_grads[adapter1_id]
-    acc_micro_a2 = engine.accumulated_grads[adapter2_id]
-    mean_micro_a1 = acc_micro_a1.get_mean()
-    mean_micro_a2 = acc_micro_a2.get_mean()
+    mean_micro = engine.accumulated_grads.get_mean(mask)
 
     # Sanity check gradient sum denominators with micro-batching
-    assert acc_micro_a1.denominator == 2
-    assert acc_micro_a2.denominator == 4
+    assert engine.accumulated_grads.denominator[0] == 2
+    assert engine.accumulated_grads.denominator[1] == 4
 
     # Build a second engine without micro-batching
     config = EngineConfig(
@@ -191,22 +190,19 @@ def test_micro_batch_grad_accumulation():
 
     # Run 2: micro-batching disabled
     engine.process_forward_backward_batch(reqs)
-    acc_full_a1 = engine.accumulated_grads[adapter1_id]
-    acc_full_a2 = engine.accumulated_grads[adapter2_id]
-    mean_full_a1 = acc_full_a1.get_mean()
-    mean_full_a2 = acc_full_a2.get_mean()
+    mean_full = engine.accumulated_grads.get_mean(mask)
 
     # Sanity check gradient sum denominators without micro-batching
-    assert acc_full_a1.denominator == 2
-    assert acc_full_a2.denominator == 4
+    assert engine.accumulated_grads.denominator[0] == 2
+    assert engine.accumulated_grads.denominator[1] == 4
 
     # Compare MEAN gradients with and without micro-batching
-    _assert_tree_allclose(mean_micro_a1, mean_full_a1, rtol=1e-3, atol=5e-3)
-    _assert_tree_allclose(mean_micro_a2, mean_full_a2, rtol=1e-3, atol=5e-3)
+    _assert_tree_allclose(mean_micro[0], mean_full[0], rtol=1e-3, atol=5e-3)
+    _assert_tree_allclose(mean_micro[1], mean_full[1], rtol=1e-3, atol=5e-3)
 
 
 def test_process_optim_step_hyperparams_behavior():
-    """Overrides apply via real requests, revert to defaults, and change update size."""
+    """Request-scoped overrides apply for the step, base hyperparameters stay unchanged, and update size shifts."""
     config = EngineConfig(
         base_model="Qwen/Qwen3-0.6B",
         checkpoints_base=AnyPath(""),
@@ -231,7 +227,9 @@ def test_process_optim_step_hyperparams_behavior():
     def apply_step(request_id: int, model_id: str, request: types.OptimStepInput) -> float:
         engine.process_forward_backward_batch([(FutureStub(request_id), model_id, make_fwd_bwd_input(tokens))])
         params_before = nnx.to_arrays(nnx.pure(engine.lora_params))
-        engine.process_optim_step(model_id, request)
+        results = engine.process_optim_step_batch([(FutureStub(request_id + 10_000), model_id, request)])
+        result = results.get(request_id + 10_000)
+        assert isinstance(result, types.OptimStepOutput)
         params_after = nnx.to_arrays(nnx.pure(engine.lora_params))
 
         delta = jax.tree.map(lambda a, b: a - b, params_after, params_before)
@@ -243,18 +241,14 @@ def test_process_optim_step_hyperparams_behavior():
     # Apply override step on the first adapter.
     tiny_norm = apply_step(1, low_adapter, tiny_request)
     hyperparams = engine.opt_hyper
-    assert hyperparams.lr[0].item() == pytest.approx(1e-8, rel=5e-3)
-    assert hyperparams.b1[0].item() == pytest.approx(0.0, abs=5e-4)
-    assert hyperparams.b2[0].item() == pytest.approx(0.0, abs=5e-4)
-    assert hyperparams.eps[0].item() == pytest.approx(1e-9, rel=5e-3)
+    assert hyperparams["lr"][0].item() == pytest.approx(LEARNING_RATE, rel=2e-3)
+    assert hyperparams["b1"][0].item() == pytest.approx(ADAM_BETA1, rel=2e-3)
+    assert hyperparams["b2"][0].item() == pytest.approx(ADAM_BETA2, rel=2e-3)
+    assert hyperparams["eps"][0].item() == pytest.approx(ADAM_EPS, rel=2e-3)
 
     # Apply fallback/default step on the second adapter (same engine).
     default_norm = apply_step(2, default_adapter, default_request)
     hyperparams = engine.opt_hyper
-    assert hyperparams.lr[1].item() == pytest.approx(1e-4, rel=2e-3)
-    assert hyperparams.b1[1].item() == pytest.approx(ADAM_BETA1, rel=2e-3)
-    assert hyperparams.b2[1].item() == pytest.approx(ADAM_BETA2, rel=2e-3)
-    assert hyperparams.eps[1].item() == pytest.approx(ADAM_EPS, rel=2e-3)
 
     # Expect a large gap in update magnitude between the two adapters.
     assert tiny_norm > 0
