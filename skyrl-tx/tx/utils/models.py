@@ -13,7 +13,7 @@ import numpy as np
 import optax
 import safetensors.numpy
 from transformers import PretrainedConfig
-from peft import LoraConfig as PEFTLoraConfig
+import peft
 
 from tx import models
 from tx.utils.storage import pack_and_upload
@@ -123,10 +123,7 @@ def save_lora_checkpoint(
 
     adapter_lora_params = extract_adapter_state(adapter_index, lora_params, non_lora_params)
 
-    peft_config = PEFTLoraConfig(
-        r=adapter_config.rank,
-        lora_alpha=adapter_config.alpha,
-    )
+    peft_config = peft.LoraConfig(r=adapter_config.rank, lora_alpha=adapter_config.alpha)
     with pack_and_upload(output_path) as temp_dir:
         save_safetensors(model.config, adapter_lora_params, temp_dir / "adapter_model.safetensors")
         peft_config.save_pretrained(temp_dir)
