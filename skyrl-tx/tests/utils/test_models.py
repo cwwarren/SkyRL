@@ -15,7 +15,7 @@ from tx.layers.lora import update_adapter_config
 from tx.models import Qwen3ForCausalLM
 from tx.tinker.types import LoraConfig
 from tx.utils import models
-from tx.utils.storage import staged_download
+from tx.utils.storage import download_and_unpack
 
 
 def create_test_model():
@@ -73,7 +73,7 @@ def test_save_load_lora_checkpoint(storage_type: str, monkeypatch, tmp_path: Pat
     assert output_path.exists()
 
     # Verify the checkpoint by extracting and loading it with safetensors
-    with staged_download(output_path) as extracted_dir:
+    with download_and_unpack(output_path) as extracted_dir:
         # Load the PEFT config
         peft_config = PEFTLoraConfig.from_pretrained(extracted_dir)
         assert peft_config.r == adapter_config.rank

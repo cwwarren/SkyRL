@@ -554,7 +554,6 @@ class TinkerEngine:
         # Make sure the user cannot store checkpoints in places like ../../<important file>
         checkpoint_id = Path(request_data.path).name
         output_path = self.config.checkpoints_base / model_id / f"{checkpoint_id}.tar.gz"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Save the LoRA adapter weights and LoRA config as tar.gz
         save_lora_checkpoint(

@@ -16,7 +16,7 @@ from transformers import PretrainedConfig
 from peft import LoraConfig as PEFTLoraConfig
 
 from tx import models
-from tx.utils.storage import staged_upload
+from tx.utils.storage import pack_and_upload
 from tx.tinker.types import LoraConfig
 
 if TYPE_CHECKING:
@@ -125,7 +125,7 @@ def save_lora_checkpoint(
         lora_alpha=adapter_config.alpha,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
-    with staged_upload(output_path) as temp_dir:
+    with pack_and_upload(output_path) as temp_dir:
         save_safetensors(config, adapter_lora_params, temp_dir / "adapter_model.safetensors")
         peft_config.save_pretrained(temp_dir)
 
