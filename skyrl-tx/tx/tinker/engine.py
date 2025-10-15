@@ -19,17 +19,13 @@ from huggingface_hub import snapshot_download
 
 from tx.tinker.db_models import FutureDB, DB_PATH, RequestStatus
 from tx.tinker import types
-from tx.tinker.config import EngineConfig, add_model
+from tx.tinker.config import EngineConfig, add_model, LEARNING_RATE, ADAM_BETA1, ADAM_BETA2, ADAM_EPS, ADAM_WEIGHT_DECAY
 from tx.utils.models import get_dtype, get_model_class, save_checkpoint, load_checkpoint
 from tx.layers.lora import update_adapter_config
+from tx.utils import opt
 from peft import LoraConfig
 
 logger = logging.getLogger(__name__)
-
-LEARNING_RATE = 1e-4
-ADAM_BETA1 = 0.9
-ADAM_BETA2 = 0.95
-ADAM_EPS = 1e-12
 
 
 def round_up_seq_len(seq_len: int) -> int:
@@ -122,20 +118,16 @@ class TinkerEngine:
             self.model = model_class(self.model_config, dtype=get_dtype(self.model_config.dtype), rngs=nnx.Rngs(0))
             load_checkpoint(checkpoint_path, self.model_config, self.model)
 
-            # Create optimizer that only targets LoRA A and B parameters
+            # Only target LoRA A and B parameters
             def is_lora_param(path, value):
                 return any(name in path for name in ["lora_A", "lora_B"])
 
-            opt = optax.inject_hyperparams(optax.adamw)(
-                learning_rate=LEARNING_RATE,
-                b1=ADAM_BETA1,
-                b2=ADAM_BETA2,
-                eps=ADAM_EPS,
-            )
-            self.optimizer = nnx.Optimizer(self.model, opt, wrt=is_lora_param)
-
             # Split model into LoRA and non-LoRA parameters
             self.graphdef, self.lora_params, self.non_lora_params = nnx.split(self.model, is_lora_param, ...)
+
+            # Initialize optimizer state and hyperparameters
+            self.opt_state, self.opt_hyper = opt.adamw_init(self.config.max_lora_adapters, self.lora_params, lr=LEARNING_RATE, b1=ADAM_BETA1, b2=ADAM_BETA2, eps=ADAM_EPS, wd=ADAM_WEIGHT_DECAY)
+            self.opt_step = jax.jit(opt.adamw_step) if not self.config.enforce_eager else opt.adamw_step
 
         logger.info(
             f"Initialized base model {self.config.base_model} with max_lora_adapters={self.config.max_lora_adapters}, max_lora_rank={self.config.max_lora_rank}"
@@ -468,13 +460,12 @@ class TinkerEngine:
         full_lora_grads = jax.tree.map(expand_adapter_grads, self.lora_params, adapter_grads)
 
         # Apply optimizer update with per-request overrides
-        hyperparams = self.optimizer.opt_state.hyperparams
-        adam_params = request_data.adam_params
-        hyperparams["learning_rate"][...] = adam_params.lr if adam_params.lr is not None else LEARNING_RATE
-        hyperparams["b1"][...] = adam_params.beta1 if adam_params.beta1 is not None else ADAM_BETA1
-        hyperparams["b2"][...] = adam_params.beta2 if adam_params.beta2 is not None else ADAM_BETA2
-        hyperparams["eps"][...] = adam_params.eps if adam_params.eps is not None else ADAM_EPS
-        self.optimizer.update(self.lora_params, full_lora_grads)
+        mask = jax.nn.one_hot(adapter_index, self.config.max_lora_adapters, dtype=jnp.bool_)
+        self.opt_hyper.lr = self.opt_hyper.lr.at[adapter_index].set(request_data.adam_params.lr if request_data.adam_params.lr is not None else LEARNING_RATE)
+        self.opt_hyper.b1 = self.opt_hyper.b1.at[adapter_index].set(request_data.adam_params.beta1 if request_data.adam_params.beta1 is not None else ADAM_BETA1)
+        self.opt_hyper.b2 = self.opt_hyper.b2.at[adapter_index].set(request_data.adam_params.beta2 if request_data.adam_params.beta2 is not None else ADAM_BETA2)
+        self.opt_hyper.eps = self.opt_hyper.eps.at[adapter_index].set(request_data.adam_params.eps if request_data.adam_params.eps is not None else ADAM_EPS)
+        self.lora_params, self.opt_state = self.opt_step(self.lora_params, full_lora_grads, self.opt_state, self.opt_hyper, mask)
 
         # Clear accumulated gradients
         self.accumulated_grads[model_id].reset()

@@ -4,6 +4,13 @@ import argparse
 from pathlib import Path
 from pydantic import BaseModel, Field
 
+# todo: is there a better place for these?
+LEARNING_RATE = 1e-4
+ADAM_BETA1 = 0.9
+ADAM_BETA2 = 0.95
+ADAM_EPS = 1e-12
+ADAM_WEIGHT_DECAY = 1e-4
+
 
 class EngineConfig(BaseModel):
     """Configuration for the Tinker engine."""

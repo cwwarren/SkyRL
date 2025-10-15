@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 from flax import nnx
 
-from tx.tinker.engine import TinkerEngine, ADAM_BETA1, ADAM_BETA2, ADAM_EPS
-from tx.tinker.config import EngineConfig
+from tx.tinker.engine import TinkerEngine
+from tx.tinker.config import EngineConfig, ADAM_BETA1, ADAM_BETA2, ADAM_EPS
 from tx.tinker import types
 
 
@@ -246,19 +246,19 @@ def test_process_optim_step_hyperparams_behavior():
 
     # Apply override step on the first adapter.
     tiny_norm = apply_step(1, low_adapter, tiny_request)
-    hyperparams = engine.optimizer.opt_state.hyperparams
-    assert hyperparams["learning_rate"].value.item() == pytest.approx(1e-8, rel=5e-3)
-    assert hyperparams["b1"].value.item() == pytest.approx(0.0, abs=5e-4)
-    assert hyperparams["b2"].value.item() == pytest.approx(0.0, abs=5e-4)
-    assert hyperparams["eps"].value.item() == pytest.approx(1e-9, rel=5e-3)
+    hyperparams = engine.opt_hyper
+    assert hyperparams.lr[0].item() == pytest.approx(1e-8, rel=5e-3)
+    assert hyperparams.b1[0].item() == pytest.approx(0.0, abs=5e-4)
+    assert hyperparams.b2[0].item() == pytest.approx(0.0, abs=5e-4)
+    assert hyperparams.eps[0].item() == pytest.approx(1e-9, rel=5e-3)
 
     # Apply fallback/default step on the second adapter (same engine).
     default_norm = apply_step(2, default_adapter, default_request)
-    hyperparams = engine.optimizer.opt_state.hyperparams
-    assert hyperparams["learning_rate"].value.item() == pytest.approx(1e-4, rel=2e-3)
-    assert hyperparams["b1"].value.item() == pytest.approx(ADAM_BETA1, rel=2e-3)
-    assert hyperparams["b2"].value.item() == pytest.approx(ADAM_BETA2, rel=2e-3)
-    assert hyperparams["eps"].value.item() == pytest.approx(ADAM_EPS, rel=2e-3)
+    hyperparams = engine.opt_hyper
+    assert hyperparams.lr[1].item() == pytest.approx(1e-4, rel=2e-3)
+    assert hyperparams.b1[1].item() == pytest.approx(ADAM_BETA1, rel=2e-3)
+    assert hyperparams.b2[1].item() == pytest.approx(ADAM_BETA2, rel=2e-3)
+    assert hyperparams.eps[1].item() == pytest.approx(ADAM_EPS, rel=2e-3)
 
     # Expect a large gap in update magnitude between the two adapters.
     assert tiny_norm > 0
