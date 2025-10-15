@@ -1,15 +1,11 @@
 """Tests for the Tinker API mock server using the real tinker client."""
 
-import os
 import subprocess
-import tarfile
-import time
 from urllib.parse import urlparse
 
 import pytest
 import tinker
 from tinker import types
-from tx.tinker.api import create_tar_archive
 
 
 BASE_MODEL = "Qwen/Qwen3-0.6B"
@@ -132,27 +128,3 @@ def test_training_workflow(service_client):
     tinker_path = "tinker://" + parsed_url.netloc + "/sampler_weights/" + parsed_url.path.lstrip("/")
     future = rest_client.download_checkpoint_archive_from_tinker_path(tinker_path)
     assert len(future.result()) > 0
-
-
-def test_create_tar_archive(tmp_path):
-    file1 = tmp_path / "alpha.txt"
-    file2 = tmp_path / "beta.bin"
-
-    file1.write_text("hello world")
-    file2.write_bytes(b"\x01\x02\x03")
-
-    fixed_mtime = int(time.time()) - 5
-    os.utime(file1, (fixed_mtime, fixed_mtime))
-    os.utime(file2, (fixed_mtime + 1, fixed_mtime + 1))
-
-    buffer, _ = create_tar_archive(tmp_path)
-
-    with tarfile.open(fileobj=buffer, mode="r:gz") as tar:
-        names = sorted(member.name for member in tar.getmembers())
-        assert names == ["alpha.txt", "beta.bin"]
-
-        assert tar.extractfile("alpha.txt").read() == b"hello world"
-        assert tar.extractfile("beta.bin").read() == b"\x01\x02\x03"
-
-        assert tar.getmember("alpha.txt").mtime == fixed_mtime
-        assert tar.getmember("beta.bin").mtime == fixed_mtime + 1

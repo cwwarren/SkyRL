@@ -32,37 +32,49 @@ def create_test_model():
 
 @pytest.mark.parametrize("storage_type", ["local", "cloud"])
 def test_save_load_lora_checkpoint(storage_type: str, monkeypatch, tmp_path: Path):
-    # Setup output directory based on storage type
+    # Setup output path for tar.gz file based on storage type
     if storage_type == "cloud":
         monkeypatch.setitem(implementation_registry, "s3", local_s3_implementation)
         client = local_s3_implementation.client_class(local_storage_dir=tmp_path)
-        output_dir = CloudPath("s3://bucket/checkpoint", client=client)
+        output_path = CloudPath("s3://bucket/checkpoint.tar.gz", client=client)
     else:
-        output_dir = tmp_path / "checkpoint"
+        output_path = tmp_path / "checkpoint.tar.gz"
 
     # Create a small Qwen3 model
     config, original_model = create_test_model()
     adapter_config = LoraConfig(rank=8, alpha=16)
 
-    # Save the LoRA checkpoint
-    models.save_lora_checkpoint(config, adapter_config, original_model, output_dir)
+    # Save the LoRA checkpoint as tar.gz
+    models.save_lora_checkpoint(config, adapter_config, original_model, output_path)
 
-    # Verify adapter_model.safetensors was created
-    model_path = output_dir / "adapter_model.safetensors"
-    assert model_path.exists()
+    # Verify tar.gz file was created
+    assert output_path.exists()
 
-    # Verify adapter_config.json was created and has correct content
-    config_path = output_dir / "adapter_config.json"
-    assert config_path.exists()
+    # Verify the tar.gz contains the expected files
+    import tarfile
+    if isinstance(output_path, CloudPath):
+        # Download to verify contents
+        temp_tar = tmp_path / "temp.tar.gz"
+        output_path.download_to(temp_tar)
+        tar_path = temp_tar
+    else:
+        tar_path = output_path
 
-    saved_config = json.loads(config_path.read_text())
-    assert saved_config["r"] == adapter_config.rank
-    assert saved_config["lora_alpha"] == adapter_config.alpha
-    assert saved_config["peft_type"] == "LORA"
+    with tarfile.open(tar_path, "r:gz") as tar:
+        names = [member.name for member in tar.getmembers()]
+        assert "adapter_model.safetensors" in names
+        assert "adapter_config.json" in names
 
-    # Round trip: Load the checkpoint into a new model
+        # Verify adapter_config.json has correct content
+        config_file = tar.extractfile("adapter_config.json")
+        saved_config = json.loads(config_file.read())
+        assert saved_config["r"] == adapter_config.rank
+        assert saved_config["lora_alpha"] == adapter_config.alpha
+        assert saved_config["peft_type"] == "LORA"
+
+    # Round trip: Load the checkpoint from tar.gz into a new model
     _, loaded_model = create_test_model()
-    loaded_config = models.load_lora_checkpoint(output_dir, config, loaded_model)
+    loaded_config = models.load_lora_checkpoint(output_path, config, loaded_model)
 
     # Verify the config was loaded correctly
     assert loaded_config.rank == adapter_config.rank

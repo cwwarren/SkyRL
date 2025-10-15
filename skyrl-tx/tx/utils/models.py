@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from enum import Enum
+import io
 import os
 from pathlib import Path
+import tarfile
 from typing import Callable, TYPE_CHECKING
 from tempfile import TemporaryDirectory
 
@@ -17,6 +19,7 @@ from transformers import PretrainedConfig
 from peft import LoraConfig as PEFTLoraConfig
 
 from tx import models
+from tx.tinker.api import create_tar_archive
 from tx.utils.storage import staged_upload, staged_download
 from tx.tinker.types import LoraConfig
 
@@ -106,26 +109,34 @@ def save_safetensors(config: PretrainedConfig, model: nnx.Module, filename: Path
 
 
 def save_lora_checkpoint(
-    config: PretrainedConfig, adapter_config: LoraConfig, model: nnx.Module, output_dir: Path | CloudPath
+    config: PretrainedConfig, adapter_config: LoraConfig, model: nnx.Module, output_path: Path | CloudPath
 ):
+    """Save a LoRA checkpoint as a tar.gz archive.
+
+    Args:
+        config: Model configuration
+        adapter_config: LoRA adapter configuration
+        model: Model to save
+        output_path: Path to save the checkpoint tar.gz file
+    """
     peft_config = PEFTLoraConfig(r=adapter_config.rank, lora_alpha=adapter_config.alpha)
-    with staged_upload(output_dir) as temp_dir:
+    with staged_upload(output_path) as temp_dir:
         save_safetensors(config, model, temp_dir / "adapter_model.safetensors")
         peft_config.save_pretrained(temp_dir)
 
 
-def load_lora_checkpoint(checkpoint_dir: Path | CloudPath, config: PretrainedConfig, model: nnx.Module) -> LoraConfig:
-    """Load a LoRA checkpoint from a directory.
+def load_lora_checkpoint(checkpoint_path: Path | CloudPath, config: PretrainedConfig, model: nnx.Module) -> LoraConfig:
+    """Load a LoRA checkpoint from a tar.gz archive.
 
     Args:
-        checkpoint_dir: Directory containing adapter_model.safetensors and adapter_config.json
+        checkpoint_path: Path to the checkpoint tar.gz file
         config: Model configuration
         model: Model to load the LoRA weights into
 
     Returns:
         LoraConfig with rank and alpha from the checkpoint
     """
-    with staged_download(checkpoint_dir) as temp_dir:
+    with staged_download(checkpoint_path) as temp_dir:
         # Load the PEFT config to get rank and alpha
         peft_config = PEFTLoraConfig.from_pretrained(temp_dir)
 
