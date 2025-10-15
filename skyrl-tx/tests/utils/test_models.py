@@ -18,7 +18,7 @@ from tx.utils import models
 from tx.utils.storage import download_and_unpack
 
 
-def create_test_model():
+def create_test_model(rank: int, alpha: int):
     """Create a small Qwen3 model for testing with LoRA enabled."""
     config = AutoConfig.from_pretrained("Qwen/Qwen3-0.6B")
     # Make it smaller for testing
@@ -33,7 +33,7 @@ def create_test_model():
     mesh = jax.make_mesh((1, 1), ("dp", "tp"))
     with jax.set_mesh(mesh):
         model = Qwen3ForCausalLM(config, dtype=jnp.float32, rngs=nnx.Rngs(0))
-        update_adapter_config(model, adapter_index=0, lora_rank=8, lora_alpha=16)
+        update_adapter_config(model, adapter_index=0, lora_rank=rank, lora_alpha=alpha)
 
     return config, model
 
@@ -48,8 +48,8 @@ def test_save_load_lora_checkpoint(storage_type: str, monkeypatch, tmp_path: Pat
     else:
         output_path = tmp_path / "checkpoint.tar.gz"
 
-    config, model = create_test_model()
     rank, alpha = 8, 16
+    config, model = create_test_model(rank, alpha)
     adapter_config = LoraConfig(rank=rank, alpha=alpha)
 
     # Set LoRA weights to random values for testing (to catch transpose bugs)
