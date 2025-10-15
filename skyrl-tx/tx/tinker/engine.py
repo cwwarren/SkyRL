@@ -549,21 +549,16 @@ class TinkerEngine:
         if model_id not in self.models:
             raise ValueError(f"Model {model_id} not loaded")
 
-        adapter_index = self.models[model_id].adapter_index
+        lora_model = self.models[model_id]
 
         # Make sure the user cannot store checkpoints in places like ../../<important file>
         checkpoint_id = Path(request_data.path).name
         output_path = self.config.checkpoints_base / model_id / f"{checkpoint_id}.tar.gz"
 
         # Save the LoRA adapter weights and LoRA config as tar.gz
-        save_lora_checkpoint(
-            self.model,
-            self.models[model_id].lora_config,
-            adapter_index,
-            output_path,
-        )
+        save_lora_checkpoint(self.model, lora_model.lora_config, lora_model.adapter_index, output_path)
 
-        logger.info(f"Saved LoRA adapter weights for model {model_id} (adapter {adapter_index}) to {output_path}")
+        logger.info(f"Saved LoRA adapter weights for model {model_id} to {output_path}")
 
         return types.SaveWeightsForSamplerOutput(
             path=f"tinker://{model_id}/{checkpoint_id}",
