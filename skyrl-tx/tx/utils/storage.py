@@ -24,3 +24,20 @@ def staged_upload(dest: Path | CloudPath) -> Generator[Path, None, None]:
                 shutil.rmtree(dest)
             shutil.copytree(tmp_path, dest)
 
+
+@contextmanager
+def staged_download(source: Path | CloudPath) -> Generator[Path, None, None]:
+    """Temp directory that downloads from cloud/local path on entry."""
+    with TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+
+        # Handle CloudPath and local Path differently
+        if isinstance(source, CloudPath):
+            source.download_to(tmp_path)
+        else:
+            # For local paths, use shutil.copytree
+            source = Path(source)
+            shutil.copytree(source, tmp_path, dirs_exist_ok=True)
+
+        yield tmp_path
+

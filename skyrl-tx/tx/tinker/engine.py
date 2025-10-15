@@ -26,7 +26,7 @@ from tx.utils.models import (
     get_dtype,
     get_model_class,
     save_lora_checkpoint,
-    load_checkpoint,
+    load_safetensors,
     extract_adapter_state,
     insert_adapter_state,
 )
@@ -125,7 +125,7 @@ class TinkerEngine:
         self.mesh = jax.make_mesh((1, self.config.tensor_parallel_size), ("dp", "tp"))
         with jax.set_mesh(self.mesh):
             self.model = model_class(self.model_config, dtype=get_dtype(self.model_config.dtype), rngs=nnx.Rngs(0))
-            load_checkpoint(checkpoint_path, self.model_config, self.model)
+            load_safetensors(checkpoint_path, self.model_config, self.model)
 
             # Create optimizer that only targets LoRA A and B parameters
             def is_lora_param(path, value):
