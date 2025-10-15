@@ -2,6 +2,7 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 import torch
 from cloudpathlib import CloudPath, implementation_registry
@@ -48,12 +49,18 @@ def test_save_load_lora_checkpoint(storage_type: str, monkeypatch, tmp_path: Pat
         output_path = tmp_path / "checkpoint.tar.gz"
 
     config, model = create_test_model()
-    adapter_config = LoraConfig(rank=8, alpha=16)
+    rank, alpha = 8, 16
+    adapter_config = LoraConfig(rank=rank, alpha=alpha)
 
-    # Set LoRA weights to known values for testing
+    # Set LoRA weights to random values for testing (to catch transpose bugs)
     q_proj = model.model.layers[0].self_attn.q_proj
-    q_proj.lora_A.value = jnp.ones_like(q_proj.lora_A.value)
-    q_proj.lora_B.value = jnp.ones_like(q_proj.lora_B.value) * 2.0
+    rng1, rng2 = jax.random.split(jax.random.PRNGKey(42))
+    q_proj.lora_A.value = jax.random.normal(rng1, q_proj.lora_A.value.shape)
+    q_proj.lora_B.value = jax.random.normal(rng2, q_proj.lora_B.value.shape)
+
+    # Store expected values (trimmed to rank and transposed)
+    expected_lora_A = np.array(q_proj.lora_A.value[0, :, :rank].T)
+    expected_lora_B = np.array(q_proj.lora_B.value[0, :rank, :].T)
 
     # Save and verify checkpoint exists
     models.save_lora_checkpoint(model, adapter_config, adapter_index=0, output_path=output_path)
@@ -64,12 +71,12 @@ def test_save_load_lora_checkpoint(storage_type: str, monkeypatch, tmp_path: Pat
         base_model = AutoModelForCausalLM.from_config(config)
         peft_model = PeftModel.from_pretrained(base_model, extracted_dir)
 
-        assert peft_model.peft_config["default"].r == adapter_config.rank
-        assert peft_model.peft_config["default"].lora_alpha == adapter_config.alpha
+        assert peft_model.peft_config["default"].r == rank
+        assert peft_model.peft_config["default"].lora_alpha == alpha
 
         q_proj_adapter = peft_model.base_model.model.model.layers[0].self_attn.q_proj
         lora_A = q_proj_adapter.lora_A["default"].weight
         lora_B = q_proj_adapter.lora_B["default"].weight
 
-        assert torch.allclose(lora_A.T, torch.ones_like(lora_A.T), atol=1e-6)
-        assert torch.allclose(lora_B.T, torch.ones_like(lora_B.T) * 2.0, atol=1e-6)
+        assert torch.allclose(lora_A, torch.from_numpy(expected_lora_A), atol=1e-6)
+        assert torch.allclose(lora_B, torch.from_numpy(expected_lora_B), atol=1e-6)

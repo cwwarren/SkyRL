@@ -53,7 +53,6 @@ def get_param_key(path: tuple, prefix: str = "") -> str:
         path = (*path[:-1], "weight")
     elif path[-1] in {"lora_A", "lora_B"}:
         path = (*path, "weight")
-
     return prefix + ".".join(map(str, path))
 
 
