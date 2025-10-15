@@ -18,7 +18,7 @@ from tx.utils import models
 from tx.utils.storage import download_and_unpack
 
 
-def create_test_model(rank: int, alpha: int):
+def create_test_model(rank: int, alpha: int, adapter_index: int):
     """Create a small Qwen3 model for testing with LoRA enabled."""
     config = AutoConfig.from_pretrained("Qwen/Qwen3-0.6B")
     # Make it smaller for testing
@@ -33,7 +33,7 @@ def create_test_model(rank: int, alpha: int):
     mesh = jax.make_mesh((1, 1), ("dp", "tp"))
     with jax.set_mesh(mesh):
         model = Qwen3ForCausalLM(config, dtype=jnp.float32, rngs=nnx.Rngs(0))
-        update_adapter_config(model, adapter_index=0, lora_rank=rank, lora_alpha=alpha)
+        update_adapter_config(model, adapter_index=adapter_index, lora_rank=rank, lora_alpha=alpha)
 
     return config, model
 
@@ -48,8 +48,8 @@ def test_save_load_lora_checkpoint(storage_type: str, monkeypatch, tmp_path: Pat
     else:
         output_path = tmp_path / "checkpoint.tar.gz"
 
-    rank, alpha = 8, 16
-    config, model = create_test_model(rank, alpha)
+    rank, alpha, adapter_index = 8, 16, 2
+    config, model = create_test_model(rank, alpha, adapter_index)
     adapter_config = LoraConfig(rank=rank, alpha=alpha)
 
     # Set LoRA weights to random values for testing (to catch transpose bugs)
@@ -59,11 +59,11 @@ def test_save_load_lora_checkpoint(storage_type: str, monkeypatch, tmp_path: Pat
     q_proj.lora_B.value = jax.random.normal(rng2, q_proj.lora_B.value.shape)
 
     # Store expected values (trimmed to rank and transposed)
-    expected_lora_A = np.array(q_proj.lora_A.value[0, :, :rank].T)
-    expected_lora_B = np.array(q_proj.lora_B.value[0, :rank, :].T)
+    expected_lora_A = np.array(q_proj.lora_A.value[adapter_index, :, :rank].T)
+    expected_lora_B = np.array(q_proj.lora_B.value[adapter_index, :rank, :].T)
 
     # Save and verify checkpoint exists
-    models.save_lora_checkpoint(model, adapter_config, adapter_index=0, output_path=output_path)
+    models.save_lora_checkpoint(model, adapter_config, adapter_index, output_path)
     assert output_path.exists()
 
     # Load with peft and verify
