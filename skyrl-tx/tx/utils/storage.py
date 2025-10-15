@@ -32,4 +32,3 @@ def staged_download(source: Path | CloudPath) -> Generator[Path, None, None]:
             shutil.copytree(source, tmp_path, dirs_exist_ok=True)
 
         yield tmp_path
-

@@ -75,9 +75,9 @@ def test_save_load_lora_checkpoint(storage_type: str, monkeypatch, tmp_path: Pat
     # Compare a few key parameters
     assert jnp.allclose(
         original_state.model.layers[0].self_attn.q_proj.kernel.value,
-        loaded_state.model.layers[0].self_attn.q_proj.kernel.value
+        loaded_state.model.layers[0].self_attn.q_proj.kernel.value,
     )
     assert jnp.allclose(
         original_state.model.layers[0].self_attn.o_proj.kernel.value,
-        loaded_state.model.layers[0].self_attn.o_proj.kernel.value
+        loaded_state.model.layers[0].self_attn.o_proj.kernel.value,
     )

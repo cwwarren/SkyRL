@@ -105,7 +105,9 @@ def save_safetensors(config: PretrainedConfig, model: nnx.Module, filename: Path
     safetensors.numpy.save_file(tensors, filename)
 
 
-def save_lora_checkpoint(config: PretrainedConfig, adapter_config: LoraConfig, model: nnx.Module, output_dir: Path | CloudPath):
+def save_lora_checkpoint(
+    config: PretrainedConfig, adapter_config: LoraConfig, model: nnx.Module, output_dir: Path | CloudPath
+):
     peft_config = PEFTLoraConfig(r=adapter_config.rank, lora_alpha=adapter_config.alpha)
     with staged_upload(output_dir) as temp_dir:
         save_safetensors(config, model, temp_dir / "adapter_model.safetensors")
