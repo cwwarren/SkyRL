@@ -22,7 +22,7 @@ from huggingface_hub import snapshot_download
 from tx.tinker.db_models import FutureDB, DB_PATH, RequestStatus
 from tx.tinker import types
 from tx.tinker.config import EngineConfig, add_model
-from tx.utils.storage import pack_and_upload
+from tx.utils.storage import download_and_unpack, pack_and_upload
 from tx.utils.models import (
     get_dtype,
     get_model_class,
@@ -486,9 +486,12 @@ class TinkerEngine:
             raise ValueError("Model not loaded. Create the model before loading a checkpoint.")
 
         adapter_index = self.models[model_id].adapter_index
-        checkpoint_dir = self.config.checkpoints_base / model_id / Path(request_data.path).name
+        checkpoint_id = Path(request_data.path).name
+        checkpoint_dir = self.config.checkpoints_base / model_id / f"{checkpoint_id}.tar.gz"
 
-        restored_data = checkpoints.restore_checkpoint(ckpt_dir=checkpoint_dir, target=None, prefix="checkpoint_")
+        with download_and_unpack(checkpoint_dir) as temp_dir:
+            restored_data = checkpoints.restore_checkpoint(ckpt_dir=temp_dir, target=None, prefix="checkpoint_")
+
         if restored_data is None:
             raise FileNotFoundError(f"Training checkpoint not found in {checkpoint_dir}")
 
