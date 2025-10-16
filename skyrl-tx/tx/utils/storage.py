@@ -23,8 +23,7 @@ def pack_and_upload(dest: AnyPath) -> Generator[Path, None, None]:
         tar_buffer = io.BytesIO()
         with tarfile.open(fileobj=tar_buffer, mode="w:gz") as tar:
             for p in tmp_path.iterdir():
-                if p.is_file():
-                    tar.add(p, arcname=p.name)
+                tar.add(p, arcname=p.name)
         tar_buffer.seek(0)
 
         # Write the tar file (handles both local and cloud storage)

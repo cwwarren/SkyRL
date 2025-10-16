@@ -22,6 +22,7 @@ from huggingface_hub import snapshot_download
 from tx.tinker.db_models import FutureDB, DB_PATH, RequestStatus
 from tx.tinker import types
 from tx.tinker.config import EngineConfig, add_model
+from tx.utils.storage import pack_and_upload
 from tx.utils.models import (
     get_dtype,
     get_model_class,
@@ -517,25 +518,25 @@ class TinkerEngine:
 
         adapter_index = self.models[model_id].adapter_index
         checkpoint_id = Path(request_data.path).name
-        output_dir = self.config.checkpoints_base / model_id / checkpoint_id
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = self.config.checkpoints_base / model_id / f"{checkpoint_id}.tar.gz"
 
         adapter_lora_params = extract_adapter_state(adapter_index, self.lora_params, self.non_lora_params)
         optimizer_params = extract_adapter_state(adapter_index, nnx.state(self.optimizer), self.non_lora_params)
 
-        checkpoints.save_checkpoint(
-            target={
-                "lora_weights": nnx.to_pure_dict(adapter_lora_params),
-                "optimizer_state": nnx.to_pure_dict(optimizer_params),
-                "lora_config": self.models[model_id].lora_config.model_dump(),
-            },
-            ckpt_dir=output_dir,
-            step=0,
-            prefix="checkpoint_",
-            overwrite=True,
-        )
+        with pack_and_upload(output_path) as temp_dir:
+            checkpoints.save_checkpoint(
+                target={
+                    "lora_weights": nnx.to_pure_dict(adapter_lora_params),
+                    "optimizer_state": nnx.to_pure_dict(optimizer_params),
+                    "lora_config": self.models[model_id].lora_config.model_dump(),
+                },
+                ckpt_dir=temp_dir,
+                step=0,
+                prefix="checkpoint_",
+                overwrite=True,
+            )
 
-        logger.info(f"Saved trimmed training checkpoint for model {model_id} to {output_dir}")
+        logger.info(f"Saved trimmed training checkpoint for model {model_id} to {output_path}")
 
         return types.SaveWeightsOutput(
             path=f"tinker://{model_id}/{checkpoint_id}",
