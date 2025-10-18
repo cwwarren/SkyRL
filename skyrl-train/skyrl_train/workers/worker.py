@@ -31,7 +31,6 @@ from transformers import PreTrainedModel
 from loguru import logger
 from skyrl_train.distributed.ulysses import set_ulysses_sequence_parallel_group, apply_monkey_patch
 from skyrl_train.distributed.utils import init_custom_process_group
-from skyrl_train.utils.torch_utils import chunked_entropy_from_logits
 from skyrl_train.utils.ppo_utils import PolicyLossRegistry, ppo_critic_loss, compute_approx_kl
 from skyrl_train.workers.worker_utils import BatchIterator, reduce_metrics
 from skyrl_train.dataset.replay_buffer import Experience
@@ -755,15 +754,11 @@ class PolicyWorkerBase(Worker):
             )
         # entropy
         with torch.no_grad():
-            if self.cfg.trainer.use_sample_packing:
-                # batch_size, seqlen
-                entropy_BS = output["entropy"]
-                entropy_BS = entropy_BS[:, -num_actions - 1 : -1]
-            else:
-                action_logits = output["logits"][:, -num_actions - 1 : -1, :]
-                entropy_BS = chunked_entropy_from_logits(action_logits, requires_grad=False)
+            # batch_size, seqlen
+            entropy_BS = output["entropy"]
+            entropy_BS = entropy_BS[:, -num_actions - 1 : -1]
 
-            entropy = entropy_BS.sum().item() / entropy_BS.numel()
+            entropy = masked_mean(entropy_BS, loss_mask)
 
         # kl loss
         if self.cfg.trainer.algorithm.use_kl_loss:
@@ -795,7 +790,7 @@ class PolicyWorkerBase(Worker):
             "policy_loss": policy_loss.item(),
             "policy_lr": self.scheduler.get_last_lr()[0],
             "ppo_clip_ratio": clip_ratio,
-            "policy_entropy": entropy,
+            "policy_entropy": entropy.item(),
         }
         if self.cfg.trainer.algorithm.use_kl_loss:
             status["policy_kl"] = kl_loss.item()
