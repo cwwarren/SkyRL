@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RequestType(str, Enum):
@@ -51,7 +51,10 @@ class TinkerPath(BaseModel):
 
 
 class AdamParams(BaseModel):
-    lr: float
+    learning_rate: float | None = Field(default=None, ge=0.0, lt=1.0)
+    beta1: float | None = Field(default=None, ge=0.0, lt=1.0)
+    beta2: float | None = Field(default=None, ge=0.0, lt=1.0)
+    eps: float | None = Field(default=None, gt=0.0, lt=1.0)
 
 
 class LoraConfig(BaseModel):
