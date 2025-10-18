@@ -209,7 +209,7 @@ def test_process_optim_step_hyperparams_behavior():
     """Overrides apply via real requests, revert to defaults, and change update size."""
     config = EngineConfig(
         base_model="Qwen/Qwen3-0.6B",
-        checkpoints_base=Path(""),
+        checkpoints_base=AnyPath(""),
         max_lora_adapters=8,
         max_lora_rank=32,
     )
@@ -229,9 +229,7 @@ def test_process_optim_step_hyperparams_behavior():
     tokens = [[1, 2, 3, 4], [5, 6, 7, 8]]
 
     def apply_step(request_id: int, model_id: str, request: types.OptimStepInput) -> float:
-        engine.process_forward_backward_batch(
-            [(FutureStub(request_id), model_id, make_fwd_bwd_input(tokens))]
-        )
+        engine.process_forward_backward_batch([(FutureStub(request_id), model_id, make_fwd_bwd_input(tokens))])
         params_before = nnx.to_arrays(nnx.pure(engine.lora_params))
         engine.process_optim_step(model_id, request)
         params_after = nnx.to_arrays(nnx.pure(engine.lora_params))
@@ -239,9 +237,7 @@ def test_process_optim_step_hyperparams_behavior():
         delta = jax.tree.map(lambda a, b: a - b, params_after, params_before)
         return jnp.sqrt(jax.tree.reduce(lambda a, x: a + (x.astype(jnp.float32) ** 2).sum(), delta, 0.0)).item()
 
-    tiny_request = types.OptimStepInput(
-        adam_params=types.AdamParams(lr=1e-8, beta1=0.0, beta2=0.0, eps=1e-9)
-    )
+    tiny_request = types.OptimStepInput(adam_params=types.AdamParams(lr=1e-8, beta1=0.0, beta2=0.0, eps=1e-9))
     default_request = types.OptimStepInput(adam_params=types.AdamParams(lr=1e-4))
 
     # Apply override step on the first adapter.

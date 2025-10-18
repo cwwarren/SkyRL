@@ -136,7 +136,15 @@ class TinkerEngine:
             self.graphdef, self.lora_params, self.non_lora_params = nnx.split(self.model, is_lora_param, ...)
 
             # Initialize optimizer state and hyperparameters
-            self.opt_state, self.opt_hyper = opt.adamw_init(self.config.max_lora_adapters, self.lora_params, lr=LEARNING_RATE, b1=ADAM_BETA1, b2=ADAM_BETA2, eps=ADAM_EPS, wd=ADAM_WEIGHT_DECAY)
+            self.opt_state, self.opt_hyper = opt.adamw_init(
+                self.config.max_lora_adapters,
+                self.lora_params,
+                lr=LEARNING_RATE,
+                b1=ADAM_BETA1,
+                b2=ADAM_BETA2,
+                eps=ADAM_EPS,
+                wd=ADAM_WEIGHT_DECAY,
+            )
             self.opt_step = jax.jit(opt.adamw_step) if not self.config.enforce_eager else opt.adamw_step
 
         logger.info(
@@ -473,11 +481,21 @@ class TinkerEngine:
 
         # Apply optimizer update with per-request overrides
         mask = jax.nn.one_hot(adapter_index, self.config.max_lora_adapters, dtype=jnp.bool_)
-        self.opt_hyper.lr = self.opt_hyper.lr.at[adapter_index].set(request_data.adam_params.lr if request_data.adam_params.lr is not None else LEARNING_RATE)
-        self.opt_hyper.b1 = self.opt_hyper.b1.at[adapter_index].set(request_data.adam_params.beta1 if request_data.adam_params.beta1 is not None else ADAM_BETA1)
-        self.opt_hyper.b2 = self.opt_hyper.b2.at[adapter_index].set(request_data.adam_params.beta2 if request_data.adam_params.beta2 is not None else ADAM_BETA2)
-        self.opt_hyper.eps = self.opt_hyper.eps.at[adapter_index].set(request_data.adam_params.eps if request_data.adam_params.eps is not None else ADAM_EPS)
-        self.lora_params, self.opt_state = self.opt_step(self.lora_params, full_lora_grads, self.opt_state, self.opt_hyper, mask)
+        self.opt_hyper.lr = self.opt_hyper.lr.at[adapter_index].set(
+            request_data.adam_params.lr if request_data.adam_params.lr is not None else LEARNING_RATE
+        )
+        self.opt_hyper.b1 = self.opt_hyper.b1.at[adapter_index].set(
+            request_data.adam_params.beta1 if request_data.adam_params.beta1 is not None else ADAM_BETA1
+        )
+        self.opt_hyper.b2 = self.opt_hyper.b2.at[adapter_index].set(
+            request_data.adam_params.beta2 if request_data.adam_params.beta2 is not None else ADAM_BETA2
+        )
+        self.opt_hyper.eps = self.opt_hyper.eps.at[adapter_index].set(
+            request_data.adam_params.eps if request_data.adam_params.eps is not None else ADAM_EPS
+        )
+        self.lora_params, self.opt_state = self.opt_step(
+            self.lora_params, full_lora_grads, self.opt_state, self.opt_hyper, mask
+        )
 
         # Clear accumulated gradients
         self.accumulated_grads[model_id].reset()

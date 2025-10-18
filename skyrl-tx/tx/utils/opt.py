@@ -19,7 +19,7 @@ class AdamParams:
     lr: jax.Array  # (N,)
     b1: jax.Array  # (N,)
     b2: jax.Array  # (N,)
-    eps: jax.Array # (N,)
+    eps: jax.Array  # (N,)
     wd: jax.Array  # (N,)
 
 
@@ -50,7 +50,7 @@ def _adamw_leaf(p, g, m, v, b1, b2, h, mask):
     b1, b2 = _x(b1, m), _x(b2, v)
 
     m_ = b1_ * m + (1.0 - b1_) * g.astype(m.dtype)
-    v_ = b2_ * v + (1.0 - b2_) * g.astype(m.dtype)**2
+    v_ = b2_ * v + (1.0 - b2_) * g.astype(m.dtype) ** 2
 
     m_hat = m_ / jnp.where(mask_, 1.0 - b1, 1.0)
     v_hat = v_ / jnp.where(mask_, 1.0 - b2, 1.0)
@@ -67,5 +67,5 @@ def adamw_step(p, g, s: AdamState, h: AdamParams, mask: jax.Array):
     mask = mask.astype(jnp.bool_)
     b1, b2 = jnp.where(mask, s.b1 * h.b1, s.b1), jnp.where(mask, s.b2 * h.b2, s.b2)
     tree = jax.tree.map(lambda p, g, m, v: _adamw_leaf(p, g, m, v, b1, b2, h, mask), p, g, s.m, s.v)
-    p, m, v = jax.tree.transpose(jax.tree.structure(p), jax.tree.structure((0,0,0)), tree)
+    p, m, v = jax.tree.transpose(jax.tree.structure(p), jax.tree.structure((0, 0, 0)), tree)
     return p, AdamState(m, v, b1, b2)
